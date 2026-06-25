@@ -1,0 +1,1 @@
+from models.MSTGCNet import Model as MSTGCNet

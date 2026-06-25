@@ -1,0 +1,8 @@
+{
+  "python.analysis.typeCheckingMode": "off",
+  "python.analysis.autoImportCompletions": false,
+  "Codegeex.RepoIndex": true,
+  "Codegeex.CompletionDelay": 0.4,
+  "python-envs.defaultEnvManager": "ms-python.python:conda",
+  "python-envs.defaultPackageManager": "ms-python.python:conda"
+}
