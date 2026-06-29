@@ -55,13 +55,11 @@ class Dataset_ALFA(Dataset):
         train_values = train_data.iloc[:, 1:-1].to_numpy(dtype=np.float32)
         test_values = test_data.iloc[:, 1:-1].to_numpy(dtype=np.float32)
 
-        self.scaler.fit(train_values)
-        train_values = self.scaler.transform(train_values)
-        self.test = self.scaler.transform(test_values)
-
         split = int(len(train_values) * 0.9)
-        self.train = train_values[:split]
-        self.val = train_values[split:]
+        self.scaler.fit(train_values[:split])
+        self.train = self.scaler.transform(train_values[:split])
+        self.val = self.scaler.transform(train_values[split:])
+        self.test = self.scaler.transform(test_values)
         self.val_mark = self.train_mark[split:]
         self.train_mark = self.train_mark[:split]
         self.test_labels = self.test_labels.astype(np.float32)

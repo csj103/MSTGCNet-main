@@ -145,9 +145,10 @@ def split_like_paper(data):
     )
     normal_outside_test = outside_test[outside_test["label"] == 0]
     anomaly_outside_test = outside_test[outside_test["label"] == 1]
+    train_count = min(len(normal_outside_test), PAPER_TRAIN_VAL_ROWS)
     train, unused_normal = select_rows(
-        outside_test[outside_test["label"] == 0],
-        PAPER_TRAIN_VAL_ROWS,
+        normal_outside_test,
+        train_count,
         "paper train+val normal rows",
     )
     train["split"] = "train_val"
@@ -192,7 +193,6 @@ def main():
         skip_no_ground_truth = (
             "no_ground_truth" in path.name
             and not args.include_no_ground_truth
-            and args.split_policy != "paper"
         )
         if skip_no_ground_truth:
             skipped_files.append(path.name)
@@ -239,6 +239,8 @@ def main():
         "split_policy": args.split_policy,
         "features": FEATURE_COLUMNS,
         "train_val_rows": int(len(train_output)),
+        "paper_train_val_target_rows": int(PAPER_TRAIN_VAL_ROWS),
+        "matched_paper_train_val_rows": bool(len(train_output) == PAPER_TRAIN_VAL_ROWS),
         "loader_train_rows": int(len(train_output) * 0.9),
         "loader_val_rows": int(len(train_output) - int(len(train_output) * 0.9)),
         "test_rows": int(len(test_output)),
@@ -250,9 +252,7 @@ def main():
             [test_output["label"].eq(1)]
             .nunique()
         ),
-        "included_no_ground_truth": bool(
-            args.include_no_ground_truth or args.split_policy == "paper"
-        ),
+        "included_no_ground_truth": bool(args.include_no_ground_truth),
         "skipped_files": skipped_files,
         "output_columns": OUTPUT_COLUMNS,
     }
@@ -265,6 +265,12 @@ def main():
         "Loader split: "
         f"{metadata['loader_train_rows']} train / {metadata['loader_val_rows']} val"
     )
+    if not metadata["matched_paper_train_val_rows"]:
+        print(
+            "Warning: train+val normal rows do not match the paper target "
+            f"({metadata['train_val_rows']} vs {metadata['paper_train_val_target_rows']}) "
+            "after excluding no-ground-truth files."
+        )
     print(f"Test anomaly ratio: {metadata['test_anomaly_ratio']:.4f}")
     if skipped_files:
         print(f"Skipped {len(skipped_files)} no-ground-truth file(s)")

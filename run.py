@@ -36,7 +36,7 @@ def build_parser():
     parser.add_argument("--freq", type=str, default="s")
     parser.add_argument("--checkpoints", type=str, default="./checkpoints/")
 
-    parser.add_argument("--seq_len", type=int, default=100)
+    parser.add_argument("--seq_len", type=int, default=96)
     parser.add_argument("--label_len", type=int, default=0)
     parser.add_argument("--pred_len", type=int, default=0)
     parser.add_argument("--anomaly_ratio", type=float, default=25.0)
@@ -64,12 +64,12 @@ def build_parser():
     parser.add_argument("--num_workers", type=int, default=0)
     parser.add_argument("--itr", type=int, default=1)
     parser.add_argument("--train_epochs", type=int, default=10)
-    parser.add_argument("--batch_size", type=int, default=64)
+    parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--patience", type=int, default=3)
     parser.add_argument("--learning_rate", type=float, default=1e-4)
     parser.add_argument("--des", type=str, default="paper_alfa")
     parser.add_argument("--loss", type=str, default="MSE")
-    parser.add_argument("--lradj", type=str, default="type1")
+    parser.add_argument("--lradj", type=str, default="none")
     parser.add_argument("--use_amp", action="store_true", default=False)
 
     parser.add_argument("--use_gpu", type=str2bool, default=True)
@@ -86,13 +86,13 @@ def build_parser():
         "--patch_size_list",
         nargs="+",
         type=int,
-        default=[16, 12, 8, 32, 12, 8, 6, 4, 8, 6, 4, 2],
+        default=[2, 6, 8, 12, 6, 8, 12, 16, 8, 12, 16, 32],
     )
     parser.add_argument("--noisy_gating", type=int, default=1)
     parser.add_argument("--trend_kernel_sizes", nargs="+", type=int, default=[4, 8, 12])
     parser.add_argument("--seasonality_k", type=int, default=3)
     parser.add_argument("--loss_coef", type=float, default=1e-2)
-    parser.add_argument("--winsize", type=int, default=100)
+    parser.add_argument("--winsize", type=int, default=96)
     parser.add_argument("--alpha", type=float, default=0.01)
     parser.add_argument("--abl_GCN", type=int, default=0)
     parser.add_argument("--abl_thre", type=int, default=1)

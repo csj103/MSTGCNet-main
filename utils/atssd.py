@@ -3,7 +3,7 @@ from statistics import NormalDist
 import numpy as np
 
 
-def atssd(scores, window_size=100, alpha=0.01):
+def atssd(scores, window_size=96, alpha=0.01):
     """Adaptive Threshold Strategy for Streaming Data.
 
     This follows the paper's ATSSD procedure: for each time t, build a sliding
