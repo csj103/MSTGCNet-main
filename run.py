@@ -44,7 +44,26 @@ def build_parser():
         "--threshold_method",
         type=str,
         default="atssd",
-        choices=["percentile", "atssd"],
+        choices=["percentile", "atssd", "causal_atssd"],
+    )
+    parser.add_argument(
+        "--score_mode",
+        type=str,
+        default="causal_last",
+        choices=["causal_last", "overlap_mean", "paper_nonoverlap"],
+        help=(
+            "causal_last scores only the final point of each stride-1 window; "
+            "overlap_mean averages every reconstruction covering a point; "
+            "paper_nonoverlap follows the released experiment scaffold."
+        ),
+    )
+    parser.add_argument("--paper_strict", type=str2bool, default=True)
+    parser.add_argument("--implementation_tag", type=str, default="paper_v6")
+    parser.add_argument(
+        "--score_normalization",
+        type=str,
+        default="none",
+        choices=["none", "train_feature"],
     )
 
     parser.add_argument("--enc_in", type=int, default=10)
@@ -94,6 +113,8 @@ def build_parser():
     parser.add_argument("--loss_coef", type=float, default=1e-2)
     parser.add_argument("--winsize", type=int, default=96)
     parser.add_argument("--alpha", type=float, default=0.01)
+    parser.add_argument("--alarm_confirmation", type=int, default=1)
+    parser.add_argument("--latch_alarm", type=int, choices=[0, 1], default=0)
     parser.add_argument("--abl_GCN", type=int, default=0)
     parser.add_argument("--abl_thre", type=int, default=1)
     parser.add_argument("--residual_connection", type=int, default=1)
@@ -107,6 +128,57 @@ def build_parser():
     parser.add_argument("--p_hidden_dims", nargs="+", type=int, default=[128, 128])
     parser.add_argument("--p_hidden_layers", type=int, default=2)
     return parser
+
+
+def validate_paper_args(args):
+    expected = {
+        "seq_len": 96,
+        "winsize": 96,
+        "d_model": 64,
+        "e_layers": 3,
+        "top_k": 3,
+        "knn_k": 5,
+        "seasonality_k": 3,
+        "batch_size": 128,
+        "train_epochs": 10,
+        "patience": 3,
+        "learning_rate": 1e-4,
+        "dropout": 0.1,
+        "alpha": 0.01,
+        "threshold_method": "atssd",
+        "score_normalization": "none",
+        "alarm_confirmation": 1,
+        "latch_alarm": 0,
+        "lradj": "none",
+    }
+    mismatches = []
+    for name, paper_value in expected.items():
+        actual = getattr(args, name)
+        if isinstance(paper_value, float):
+            matches = bool(np.isclose(actual, paper_value))
+        else:
+            matches = actual == paper_value
+        if not matches:
+            mismatches.append(f"--{name}={actual!r} (paper: {paper_value!r})")
+
+    if args.num_experts_list != [4, 4, 4]:
+        mismatches.append(
+            f"--num_experts_list={args.num_experts_list!r} (paper: [4, 4, 4])"
+        )
+    patch_pool = {2, 6, 8, 12, 16, 32}
+    if any(len(layer) != 4 for layer in args.patch_size_list):
+        mismatches.append("each GMoE block must contain four patch experts")
+    if any(size not in patch_pool for layer in args.patch_size_list for size in layer):
+        mismatches.append(
+            f"--patch_size_list contains values outside paper pool {sorted(patch_pool)}"
+        )
+    if mismatches:
+        details = "\n  - ".join(mismatches)
+        raise ValueError(
+            "Paper-strict configuration mismatch:\n  - "
+            + details
+            + "\nUse --paper_strict false only for ablations or diagnostics."
+        )
 
 
 def normalize_args(args):
@@ -136,8 +208,11 @@ def normalize_args(args):
 
     if args.threshold_method == "percentile":
         args.abl_thre = 1
-    elif args.threshold_method == "atssd":
+    else:
         args.abl_thre = 0
+
+    if args.paper_strict:
+        validate_paper_args(args)
 
     return args
 
@@ -165,7 +240,9 @@ if __name__ == "__main__":
             f"_sl{args.seq_len}_dm{args.d_model}_nh{args.n_heads}"
             f"_ke{args.top_k}_kn{args.knn_k}_el{args.e_layers}"
             f"_ws{args.winsize}_ap{args.alpha}_df{args.d_ff}"
-            f"_eb{args.embed}_{ii}"
+            f"_eb{args.embed}_tm{args.threshold_method}"
+            f"_sn{args.score_normalization}"
+            f"_im{args.implementation_tag}_{ii}"
         )
         exp = exp_cls(args)
         if args.is_training:

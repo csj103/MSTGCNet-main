@@ -3,6 +3,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.distributions.normal import Normal
 
 from layers.RevIN import RevIN
 
@@ -31,27 +32,40 @@ class PositionalEncoding(nn.Module):
 
 
 class TrendSeasonalRouter(nn.Module):
-    def __init__(self, d_model, num_experts, trend_kernel_sizes, seasonality_k, noisy):
+    def __init__(
+        self,
+        seq_len,
+        d_model,
+        num_experts,
+        top_k,
+        trend_kernel_sizes,
+        seasonality_k,
+        noisy,
+    ):
         super().__init__()
         self.num_experts = num_experts
+        self.top_k = min(top_k, num_experts)
         self.trend_kernel_sizes = trend_kernel_sizes
         self.seasonality_k = seasonality_k
         self.noisy = noisy
-        self.trend_score = nn.Linear(d_model, len(trend_kernel_sizes))
-        self.merge = nn.Linear(d_model, d_model)
-        self.router = nn.Linear(d_model, num_experts)
-        self.noise = nn.Linear(d_model, num_experts)
+        self.trend_score = nn.Linear(1, len(trend_kernel_sizes))
+        self.channel_projection = nn.Linear(d_model, 1)
+        self.router = nn.Linear(seq_len, num_experts)
+        self.noise = nn.Linear(seq_len, num_experts)
+        self.register_buffer("normal_mean", torch.tensor(0.0))
+        self.register_buffer("normal_std", torch.tensor(1.0))
 
     def _seasonal(self, x):
         # x: [B, L, D]
         freq = torch.fft.rfft(x, dim=1)
-        amp = freq.abs().mean(dim=-1)
-        amp[:, 0] = 0
-        k = min(self.seasonality_k, amp.size(1))
+        amp = freq.abs()
+        if amp.size(1) <= 1:
+            return torch.zeros_like(x)
+        amp[:, 0, :] = float("-inf")
+        k = min(self.seasonality_k, amp.size(1) - 1)
         top_idx = torch.topk(amp, k, dim=1).indices
         mask = torch.zeros_like(freq)
-        gather = top_idx.unsqueeze(-1).expand(-1, -1, x.size(-1))
-        mask.scatter_(1, gather, 1.0 + 0.0j)
+        mask.scatter_(1, top_idx, 1.0 + 0.0j)
         return torch.fft.irfft(freq * mask, n=x.size(1), dim=1)
 
     def _trend(self, x):
@@ -68,20 +82,56 @@ class TrendSeasonalRouter(nn.Module):
             ).transpose(1, 2)
             pooled.append(trend)
         stacked = torch.stack(pooled, dim=-1)
-        weights = torch.softmax(self.trend_score(x.mean(dim=1)), dim=-1)
-        return torch.einsum("bldc,bc->bld", stacked, weights)
+        weights = torch.softmax(self.trend_score(x.unsqueeze(-1)), dim=-1)
+        return (stacked * weights).sum(dim=-1)
+
+    def _prob_in_top_k(self, clean_logits, noisy_logits, noise_std, top_values):
+        batch_size = clean_logits.size(0)
+        values_per_sample = top_values.size(1)
+        flat_values = top_values.flatten()
+        threshold_positions = (
+            torch.arange(batch_size, device=clean_logits.device) * values_per_sample
+            + self.top_k
+        )
+        threshold_if_in = flat_values.gather(0, threshold_positions).unsqueeze(1)
+        threshold_if_out = flat_values.gather(
+            0, threshold_positions - 1
+        ).unsqueeze(1)
+        is_in = noisy_logits > threshold_if_in
+        normal = Normal(self.normal_mean, self.normal_std)
+        prob_if_in = normal.cdf((clean_logits - threshold_if_in) / noise_std)
+        prob_if_out = normal.cdf((clean_logits - threshold_if_out) / noise_std)
+        return torch.where(is_in, prob_if_in, prob_if_out)
 
     def forward(self, x):
         seasonal = self._seasonal(x)
         trend = self._trend(x)
-        transformed = self.merge(x + seasonal + trend)
-        pooled = transformed.mean(dim=1)
-        logits = self.router(pooled)
+        transformed = x + seasonal + trend
+        routing_input = self.channel_projection(transformed).squeeze(-1)
+        clean_logits = self.router(routing_input)
+        noise_std = None
         if self.training and self.noisy:
-            noise_scale = F.softplus(self.noise(pooled)) + 1e-2
-            logits = logits + torch.randn_like(logits) * noise_scale
-        weights = torch.softmax(logits, dim=-1)
-        return weights, transformed
+            noise_std = F.softplus(self.noise(routing_input)) + 1e-2
+            logits = clean_logits + torch.randn_like(clean_logits) * noise_std
+        else:
+            logits = clean_logits
+
+        top_count = min(self.top_k + 1, self.num_experts)
+        top_values, top_indices = logits.topk(top_count, dim=1)
+        selected_values = top_values[:, : self.top_k]
+        selected_indices = top_indices[:, : self.top_k]
+        selected_gates = torch.softmax(selected_values, dim=1)
+        gates = torch.zeros_like(logits).scatter(
+            1, selected_indices, selected_gates
+        )
+
+        if self.training and self.noisy and self.top_k < self.num_experts:
+            load = self._prob_in_top_k(
+                clean_logits, logits, noise_std, top_values
+            ).sum(dim=0)
+        else:
+            load = (gates > 0).sum(dim=0).to(gates.dtype)
+        return gates, load, transformed
 
 
 class CCSTGCNExpert(nn.Module):
@@ -94,6 +144,7 @@ class CCSTGCNExpert(nn.Module):
         knn_k,
         attn_heads,
         dropout,
+        abl_gcn=False,
     ):
         super().__init__()
         self.seq_len = seq_len
@@ -101,22 +152,29 @@ class CCSTGCNExpert(nn.Module):
         self.patch_size = patch_size
         self.num_patches = math.ceil(seq_len / patch_size)
         self.num_nodes = num_vars * self.num_patches
-        self.knn_k = min(knn_k, self.num_nodes)
+        self.knn_k = min(knn_k, max(self.num_nodes - 1, 1))
+        self.abl_gcn = abl_gcn
 
         self.to_vars = nn.Linear(d_model, num_vars)
+        attention_heads = max(1, math.gcd(attn_heads, d_model))
+        self.attention_in = nn.Linear(1, d_model)
         self.temporal_attn = nn.MultiheadAttention(
-            embed_dim=1, num_heads=1, dropout=dropout, batch_first=True
+            embed_dim=d_model,
+            num_heads=attention_heads,
+            dropout=dropout,
+            batch_first=True,
         )
+        self.attention_out = nn.Linear(d_model, 1)
         self.node_embeddings = nn.Parameter(torch.randn(self.num_nodes, patch_size))
         self.graph_weight = nn.Parameter(torch.empty(patch_size, patch_size))
-        self.graph_bias = nn.Parameter(torch.zeros(patch_size))
+        self.graph_bias = nn.Parameter(torch.zeros(self.num_nodes, patch_size))
         self.to_model = nn.Linear(num_vars, d_model)
         self.dropout = nn.Dropout(dropout)
         nn.init.xavier_uniform_(self.graph_weight)
 
         patch_ids = torch.arange(self.num_patches).repeat_interleave(num_vars)
         causal = patch_ids.unsqueeze(1) >= patch_ids.unsqueeze(0)
-        self.register_buffer("causal_mask", causal.float())
+        self.register_buffer("causal_mask", causal)
 
     def _patch(self, x):
         # x: [B, L, D] -> [B, nodes, patch_size]
@@ -142,23 +200,32 @@ class CCSTGCNExpert(nn.Module):
 
     def _adjacency(self):
         emb = F.normalize(self.node_embeddings, dim=-1)
-        sim = torch.relu(torch.matmul(emb, emb.transpose(0, 1)))
-        sim = sim * self.causal_mask
-        if self.knn_k < self.num_nodes:
-            top_idx = torch.topk(sim, self.knn_k, dim=-1).indices
-            mask = torch.zeros_like(sim)
-            mask.scatter_(1, top_idx, 1.0)
-            sim = sim * mask
-        adj = sim + torch.eye(self.num_nodes, device=sim.device, dtype=sim.dtype)
+        sim = torch.matmul(emb, emb.transpose(0, 1))
+        valid = self.causal_mask.clone()
+        valid.fill_diagonal_(False)
+        sim = sim.masked_fill(~valid, float("-inf"))
+        top_idx = torch.topk(sim, self.knn_k, dim=-1).indices
+        adj = torch.zeros_like(sim)
+        adj.scatter_(1, top_idx, 1.0)
+        adj = adj * valid.to(adj.dtype)
+        adj = adj + torch.eye(self.num_nodes, device=adj.device, dtype=adj.dtype)
         degree = adj.sum(dim=-1).clamp_min(1e-6)
         norm = degree.rsqrt().unsqueeze(1) * adj * degree.rsqrt().unsqueeze(0)
         return norm
 
     def forward(self, x):
         patches = self._patch(x)
-        attn_in = patches.reshape(-1, self.patch_size, 1)
-        attn_out, _ = self.temporal_attn(attn_in, attn_in, attn_in)
-        patches = attn_out.reshape(x.size(0), self.num_nodes, self.patch_size)
+        attn_input = self.attention_in(patches.reshape(-1, self.patch_size, 1))
+        attn_output, _ = self.temporal_attn(attn_input, attn_input, attn_input)
+        patches = self.attention_out(attn_output).reshape(
+            x.size(0), self.num_nodes, self.patch_size
+        )
+
+        if self.abl_gcn:
+            identity = torch.eye(
+                self.num_nodes, device=patches.device, dtype=patches.dtype
+            )
+            return self._unpatch(patches), identity
 
         adj = self._adjacency()
         graph_out = torch.einsum("ij,bjf->bif", adj, patches)
@@ -196,8 +263,10 @@ class GMoEBlock(nn.Module):
             )
 
         self.router = TrendSeasonalRouter(
+            seq_len=seq_len,
             d_model=d_model,
             num_experts=num_experts,
+            top_k=self.top_k,
             trend_kernel_sizes=trend_kernel_sizes,
             seasonality_k=seasonality_k,
             noisy=noisy_gating,
@@ -212,43 +281,28 @@ class GMoEBlock(nn.Module):
                     knn_k=knn_k,
                     attn_heads=attn_heads,
                     dropout=dropout,
+                    abl_gcn=abl_gcn,
                 )
                 for i in range(num_experts)
             ]
         )
-        self.norm1 = nn.LayerNorm(d_model)
-        self.norm2 = nn.LayerNorm(d_model)
-        self.ffn = nn.Sequential(
-            nn.Linear(d_model, d_ff),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(d_ff, d_model),
-            nn.Dropout(dropout),
-        )
 
     def forward(self, x):
-        weights, transformed = self.router(x)
-        top_values, top_indices = torch.topk(weights, self.top_k, dim=-1)
-        gates = torch.zeros_like(weights)
-        gates.scatter_(1, top_indices, top_values)
-        gates = gates / gates.sum(dim=-1, keepdim=True).clamp_min(1e-6)
+        gates, load, _ = self.router(x)
 
         expert_outputs = []
         adj_list = []
         for expert in self.experts:
-            out, adj = expert(transformed)
+            out, adj = expert(x)
             expert_outputs.append(out)
             adj_list.append(adj)
 
         stacked = torch.stack(expert_outputs, dim=-1)
         mixed = torch.einsum("blde,be->bld", stacked, gates)
-        x = self.norm1(x + mixed)
-        x = self.norm2(x + self.ffn(x))
 
         importance = gates.sum(dim=0)
-        load = (gates > 0).float().sum(dim=0)
         balance_loss = cv_squared(importance) + cv_squared(load)
-        return x, balance_loss, adj_list
+        return x + mixed, balance_loss, adj_list
 
 
 class Model(nn.Module):
@@ -265,7 +319,11 @@ class Model(nn.Module):
             out_channels=configs.d_model,
             kernel_size=3,
             padding=1,
-            padding_mode="replicate",
+            padding_mode="circular",
+            bias=False,
+        )
+        nn.init.kaiming_normal_(
+            self.conv_embedding.weight, mode="fan_in", nonlinearity="leaky_relu"
         )
         self.conv_scale = nn.Parameter(torch.ones(1))
         self.position_embedding = PositionalEncoding(configs.d_model)
