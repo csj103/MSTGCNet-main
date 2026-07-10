@@ -41,3 +41,16 @@ def test_confirmation_requires_consecutive_candidates():
     )
 
     assert predictions[-5:].tolist() == [0, 0, 0, 0, 1]
+
+
+def test_causal_atssd_adapts_to_persistent_normal_regime_shift():
+    baseline = np.tile(np.array([0.9, 1.0, 1.1, 1.0]), 24)
+    shifted_normal = np.full(192, 1.5)
+    predictions, thresholds = causal_atssd(
+        np.r_[baseline, shifted_normal],
+        window_size=96,
+        alpha=0.01,
+    )
+
+    assert predictions[-96:].sum() == 0
+    assert thresholds[-1] >= 1.5

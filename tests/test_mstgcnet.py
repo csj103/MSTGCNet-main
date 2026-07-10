@@ -1,12 +1,18 @@
 import torch
 
+from exp.exp_anomaly_detection import Exp_Anomaly_Detection
 from models.MSTGCNet import Model
-from run import build_parser, normalize_args
+from run import REPRO_PATCH_SIZE_LIST, build_parser, build_setting, normalize_args
 
 
 def build_model():
     args = normalize_args(build_parser().parse_args(["--use_gpu", "false"]))
     return Model(args)
+
+
+def test_default_patch_assignment_is_coarse_to_fine():
+    args = normalize_args(build_parser().parse_args(["--use_gpu", "false"]))
+    assert args.patch_size_list == REPRO_PATCH_SIZE_LIST
 
 
 def test_router_and_balance_loss_are_differentiable():
@@ -29,6 +35,13 @@ def test_router_and_balance_loss_are_differentiable():
         assert block.router.noise.weight.grad.norm() > 0
 
 
+def test_reconstruction_loss_matches_window_squared_error():
+    outputs = torch.zeros(2, 96, 10)
+    targets = torch.ones_like(outputs)
+    loss = Exp_Anomaly_Detection._reconstruction_loss(outputs, targets)
+    assert loss.item() == 960.0
+
+
 def test_router_keeps_sample_specific_temporal_information():
     torch.manual_seed(2025)
     model = build_model().eval()
@@ -37,8 +50,89 @@ def test_router_keeps_sample_specific_temporal_information():
         hidden = model.revin_layer(inputs, "norm")
         hidden = model.conv_embedding(hidden.transpose(1, 2)).transpose(1, 2)
         hidden = model.conv_scale * hidden + model.position_embedding(hidden)
-        gates, _, _ = model.blocks[0].router(hidden)
+        sparse_weights, _, _ = model.blocks[0].router(hidden)
 
-    assert gates.std(dim=0).mean() > 1e-3
-    assert torch.allclose(gates.sum(dim=1), torch.ones(64), atol=1e-6)
-    assert torch.all((gates > 0).sum(dim=1) == model.blocks[0].top_k)
+    assert sparse_weights.std(dim=0).mean() > 1e-3
+    assert torch.all(sparse_weights.sum(dim=1) < 1)
+    assert torch.all(sparse_weights.sum(dim=1) > 0)
+    assert torch.all(
+        (sparse_weights > 0).sum(dim=1) == model.blocks[0].top_k
+    )
+
+
+def test_expert_attention_uses_paper_node_patch_dimensions():
+    model = build_model()
+    for block in model.blocks:
+        for expert in block.experts:
+            assert expert.temporal_attn.embed_dim == model.d_model
+            inputs = torch.randn(2, 96, 64)
+            patches = expert._patch(inputs)
+            assert patches.shape == (
+                2,
+                expert.num_nodes,
+                expert.patch_size,
+            )
+
+
+def test_temporal_attention_preserves_node_identity():
+    torch.manual_seed(2025)
+    expert = build_model().blocks[0].experts[0].eval()
+    patches = torch.randn(1, expert.num_nodes, expert.patch_size)
+    perturbed = patches.clone()
+    perturbed[:, -1, :] += 10
+    with torch.no_grad():
+        original_output = expert._temporal_encode(patches)
+        perturbed_output = expert._temporal_encode(perturbed)
+    difference = (perturbed_output - original_output).abs().sum(dim=-1)
+    assert torch.allclose(difference[:, :-1], torch.zeros_like(difference[:, :-1]))
+    assert torch.all(difference[:, -1] > 0)
+
+
+def test_sparse_gmoe_executes_only_selected_experts():
+    torch.manual_seed(2025)
+    model = build_model().eval()
+    calls = [0, 0]
+    hooks = []
+    for block in model.blocks:
+        for expert in block.experts:
+            def count_call(module, inputs, output):
+                calls[0] += 1
+            hooks.append(expert.register_forward_hook(count_call))
+            original_adjacency = expert._adjacency
+
+            def count_adjacency(original=original_adjacency):
+                calls[1] += 1
+                return original()
+
+            expert._adjacency = count_adjacency
+
+    with torch.no_grad():
+        model(torch.randn(1, 96, 10))
+    for hook in hooks:
+        hook.remove()
+
+    selected_count = sum(block.top_k for block in model.blocks)
+    assert calls == [selected_count, selected_count]
+
+
+def test_metadata_ratio_and_config_fingerprint_are_in_setting():
+    args = normalize_args(build_parser().parse_args(["--use_gpu", "false"]))
+    setting = build_setting(args, 0)
+    changed_args = normalize_args(
+        build_parser().parse_args(
+            [
+                "--use_gpu",
+                "false",
+                "--paper_strict",
+                "false",
+                "--alarm_confirmation",
+                "3",
+            ]
+        )
+    )
+    changed_setting = build_setting(changed_args, 0)
+    assert abs(args.anomaly_ratio - 13.4836180341641) < 1e-6
+    assert len(setting) < 120
+    assert "_cfg" in setting
+    assert setting == build_setting(args, 0)
+    assert setting != changed_setting

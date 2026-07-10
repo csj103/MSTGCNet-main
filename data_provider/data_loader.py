@@ -1,4 +1,5 @@
 import os
+import json
 import warnings
 
 import numpy as np
@@ -7,6 +8,22 @@ from sklearn.preprocessing import StandardScaler
 from torch.utils.data import Dataset
 
 warnings.filterwarnings("ignore")
+
+
+def fill_features_by_segment(data, meta):
+    feature_columns = list(data.columns[1:-1])
+    if not data[feature_columns].isna().any().any():
+        return data
+    data = data.copy()
+    if meta is not None and "segment_id" in meta.columns:
+        data[feature_columns] = data[feature_columns].groupby(
+            meta["segment_id"], sort=False
+        ).transform(lambda group: group.bfill().ffill())
+    else:
+        data[feature_columns] = data[feature_columns].bfill().ffill()
+    if data[feature_columns].isna().any().any():
+        raise ValueError("Feature NaNs remain after within-segment filling.")
+    return data
 
 
 def build_window_index(meta, total_len, win_size, step):
@@ -33,10 +50,30 @@ class Dataset_ALFA(Dataset):
 
         train_data = pd.read_csv(os.path.join(root_path, "train.csv"))
         test_data = pd.read_csv(os.path.join(root_path, "test.csv"))
+        metadata_path = os.path.join(root_path, "metadata.json")
+        metadata = {}
+        if os.path.exists(metadata_path):
+            with open(metadata_path, "r", encoding="utf-8") as file:
+                metadata = json.load(file)
+        has_explicit_val = (
+            metadata.get("split_policy") == "fault_balanced"
+            and os.path.exists(os.path.join(root_path, "val.csv"))
+        )
+        val_data = (
+            pd.read_csv(os.path.join(root_path, "val.csv"))
+            if has_explicit_val
+            else None
+        )
         train_meta_path = os.path.join(root_path, "train_meta.csv")
         test_meta_path = os.path.join(root_path, "test_meta.csv")
+        val_meta_path = os.path.join(root_path, "val_meta.csv")
         train_meta = pd.read_csv(train_meta_path) if os.path.exists(train_meta_path) else None
         test_meta = pd.read_csv(test_meta_path) if os.path.exists(test_meta_path) else None
+        val_meta = (
+            pd.read_csv(val_meta_path)
+            if has_explicit_val and os.path.exists(val_meta_path)
+            else None
+        )
 
         if "label" not in train_data.columns or "label" not in test_data.columns:
             raise ValueError("ALFA csv files must contain a final 'label' column.")
@@ -45,8 +82,14 @@ class Dataset_ALFA(Dataset):
         train_data = train_data.loc[normal_index].copy().reset_index(drop=True)
         if train_meta is not None:
             train_meta = train_meta.loc[normal_index].copy().reset_index(drop=True)
-        train_data = train_data.bfill().ffill()
-        test_data = test_data.bfill().ffill()
+        train_data = fill_features_by_segment(train_data, train_meta)
+        test_data = fill_features_by_segment(test_data, test_meta)
+        if val_data is not None:
+            normal_val_index = val_data[val_data["label"] == 0].index
+            val_data = val_data.loc[normal_val_index].copy().reset_index(drop=True)
+            if val_meta is not None:
+                val_meta = val_meta.loc[normal_val_index].copy().reset_index(drop=True)
+            val_data = fill_features_by_segment(val_data, val_meta)
 
         self.train_mark = train_data.iloc[:, 0].to_numpy()
         self.test_mark = test_data.iloc[:, 0].to_numpy()
@@ -56,16 +99,25 @@ class Dataset_ALFA(Dataset):
         test_values = test_data.iloc[:, 1:-1].to_numpy(dtype=np.float32)
 
         split = int(len(train_values) * 0.9)
-        self.scaler.fit(train_values[:split])
-        self.train = self.scaler.transform(train_values[:split])
-        self.val = self.scaler.transform(train_values[split:])
+        if val_data is not None:
+            val_values = val_data.iloc[:, 1:-1].to_numpy(dtype=np.float32)
+            self.scaler.fit(train_values)
+            self.train = self.scaler.transform(train_values)
+            self.val = self.scaler.transform(val_values)
+            self.val_mark = val_data.iloc[:, 0].to_numpy()
+            self.train_meta = train_meta
+            self.val_meta = val_meta
+        else:
+            self.scaler.fit(train_values[:split])
+            self.train = self.scaler.transform(train_values[:split])
+            self.val = self.scaler.transform(train_values[split:])
+            self.val_mark = self.train_mark[split:]
+            self.train_mark = self.train_mark[:split]
+            self.train_meta = train_meta.iloc[:split].reset_index(drop=True) if train_meta is not None else None
+            self.val_meta = train_meta.iloc[split:].reset_index(drop=True) if train_meta is not None else None
         self.test = self.scaler.transform(test_values)
-        self.val_mark = self.train_mark[split:]
-        self.train_mark = self.train_mark[:split]
         self.test_labels = self.test_labels.astype(np.float32)
 
-        self.train_meta = train_meta.iloc[:split].reset_index(drop=True) if train_meta is not None else None
-        self.val_meta = train_meta.iloc[split:].reset_index(drop=True) if train_meta is not None else None
         self.test_meta = test_meta.reset_index(drop=True) if test_meta is not None else None
         self.train_windows = build_window_index(
             self.train_meta, len(self.train), self.win_size, self.step

@@ -57,6 +57,7 @@ def infer(model, values, marks, starts, batch_size=64):
 def describe(name, inputs, outputs, balance_loss):
     error = (inputs - outputs).pow(2)
     full_mse = float(error.mean())
+    reconstruction_loss = float(error.flatten(start_dim=1).sum(dim=1).mean())
     endpoint_error = error[:, -1]
     correlation = torch.corrcoef(
         torch.stack([inputs.flatten(), outputs.flatten()])
@@ -64,9 +65,11 @@ def describe(name, inputs, outputs, balance_loss):
     print(
         name,
         "full_mse=", full_mse,
+        "reconstruction_loss=", reconstruction_loss,
         "last_mse=", float(endpoint_error.mean()),
         "balance=", balance_loss,
-        "balance/full=", balance_loss / max(full_mse, 1e-12),
+        "balance/reconstruction=",
+        balance_loss / max(reconstruction_loss, 1e-12),
     )
     print(
         name,
@@ -85,17 +88,25 @@ def routing_stats(model, inputs):
         hidden = model.conv_scale * hidden + model.position_embedding(hidden)
         result = []
         for block in model.blocks:
-            gates, _, _ = block.router(hidden)
-            selected = torch.topk(gates, block.top_k, dim=-1).indices
+            sparse_weights, _, _ = block.router(hidden)
+            selected = torch.topk(
+                sparse_weights, block.top_k, dim=-1
+            ).indices
             usage = torch.bincount(
                 selected.flatten(), minlength=block.num_experts
             )
-            entropy = -(gates * gates.clamp_min(1e-12).log()).sum(-1).mean()
+            normalized = sparse_weights / sparse_weights.sum(
+                dim=-1, keepdim=True
+            ).clamp_min(1e-12)
+            entropy = -(normalized * normalized.clamp_min(1e-12).log()).sum(-1).mean()
             result.append(
                 {
                     "usage": usage.numpy().tolist(),
                     "entropy": float(entropy),
-                    "mean_weights": gates.mean(0).numpy().tolist(),
+                    "mean_weights": sparse_weights.mean(0).numpy().tolist(),
+                    "mean_selected_weight_sum": float(
+                        sparse_weights.sum(dim=-1).mean()
+                    ),
                 }
             )
             hidden, _, _ = block(hidden)
@@ -108,14 +119,18 @@ def router_input_stats(model, inputs):
         hidden = model.conv_embedding(hidden.transpose(1, 2)).transpose(1, 2)
         hidden = model.conv_scale * hidden + model.position_embedding(hidden)
         router = model.blocks[0].router
-        transformed = hidden + router._seasonal(hidden) + router._trend(hidden)
+        transformed = router.merge(
+            hidden + router._seasonal(hidden) + router._trend(hidden)
+        )
         routing_input = router.channel_projection(transformed).squeeze(-1)
-        gates, _, _ = router(hidden)
+        sparse_weights, _, _ = router(hidden)
     return {
         "transformed_between_sample_std": float(transformed.std(dim=0).mean()),
         "routing_between_sample_std": float(routing_input.std(dim=0).mean()),
         "routing_absolute_mean": float(routing_input.abs().mean()),
-        "weight_between_sample_std": float(gates.std(dim=0).mean()),
+        "weight_between_sample_std": float(
+            sparse_weights.std(dim=0).mean()
+        ),
     }
 
 

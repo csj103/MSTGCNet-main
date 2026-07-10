@@ -8,9 +8,11 @@ Multiscale Spatio-Temporal Graph Convolutional Network for UAV Anomaly Detection
 
 The selected ALFA files in `alfa_10vars/` can be converted to the format expected by
 `Dataset_ALFA`. By default, files whose names contain `no_ground_truth` are excluded.
-With this stricter source filter, the test split still keeps the paper-sized 24556
-points and 0.25 anomaly rate, but the available normal train/validation rows are
-slightly fewer than Table III.
+The default `fault_balanced` policy assigns complete flights to one split only.
+It selects whole fault flights whose anomaly totals are closest to the scarcest
+fault type, then splits the remaining flights into normal-only training and
+validation sets. This avoids flight leakage and prevents engine/aileron faults
+from dominating the test metrics.
 
 ```bash
 python scripts/preprocess_alfa.py
@@ -18,11 +20,11 @@ python scripts/preprocess_alfa.py
 
 This creates:
 
-- `dataset/ALFA10vars/train.csv`: all available normal points outside the test
-  window. `Dataset_ALFA` splits this internally into 90% training and 10%
-  validation points.
-- `dataset/ALFA10vars/test.csv`: 24556 continuous test points with 6139 anomalies.
-- `dataset/ALFA10vars/train_meta.csv` and `test_meta.csv`: flight and segment
+- `dataset/ALFA10vars/train.csv` and `val.csv`: normal points from disjoint
+  training and validation flights.
+- `dataset/ALFA10vars/test.csv`: complete held-out fault flights with balanced
+  anomaly totals across engine, elevator, aileron, and rudder faults.
+- `dataset/ALFA10vars/*_meta.csv`: flight and segment
   metadata used to prevent sliding windows from crossing discontinuous flights.
 - `dataset/ALFA10vars/split_summary.csv`: per-flight split and label summary.
 - `dataset/ALFA10vars/metadata.json`: feature list and dataset statistics.
@@ -41,9 +43,11 @@ python run.py
 The default configuration follows Table IV: `seq_len=96`, `winsize=96`,
 `batch_size=128`, `learning_rate=1e-4`, `train_epochs=10`, `patience=3`,
 `dropout=0.1`, `d_model=64`, three MSTGCNet blocks, four experts per block,
-top-3 expert selection, top-3 Fourier bases, trend kernels `4,8,12`, patch
-sizes selected from the paper's patch pool `2,6,8,12,16,32`, reconstruction
-loss plus expert balance loss, and ATSSD adaptive thresholding.
+top-3 expert selection, top-3 Fourier bases, trend kernels `4,8,12`, and the
+coarse-to-fine patch assignment `[8,12,16,32]`, `[6,8,12,16]`,
+`[2,6,8,12]`. The first block is confirmed by Fig. 7; the remaining two
+blocks are an explicit reproduction assumption based on the reported patch
+pool. Training uses reconstruction loss plus expert balance loss.
 The evaluation prints both raw point-wise metrics and point-adjusted metrics.
 It also reports ROC-AUC, PR-AUC, and the number of anomaly events hit by the
 raw predictions. Point-adjusted metrics use ground-truth anomaly boundaries
@@ -64,7 +68,7 @@ python run.py --score_mode paper_nonoverlap
 
 The paper-aligned defaults are checked at startup by `--paper_strict true`.
 Changing a Table IV setting raises an error; pass `--paper_strict false` only
-for ablations. The new implementation uses the `paper_v6` experiment tag so
+for ablations. The new implementation uses the `v10_balanced` experiment tag so
 that checkpoints produced by earlier incompatible model definitions cannot be
 loaded accidentally.
 
@@ -72,15 +76,19 @@ For deployable pointwise detection, use the causal normal-history threshold
 and calibrate each variable by its normal training reconstruction error:
 
 ```bash
-python run.py --threshold_method causal_atssd --score_normalization train_feature --paper_strict false --implementation_tag point_v6
+python run.py --threshold_method causal_atssd --score_normalization train_feature --paper_strict false --implementation_tag point_v10_balanced
 ```
 
-Unlike paper ATSSD, `causal_atssd` does not feed detected high-score points
-back into its 96-point normal reference window. This prevents persistent faults
-from raising their own threshold. For a precision-oriented experiment, lower
+Unlike paper ATSSD, `causal_atssd` feeds a clipped form of detected high-score
+points into its 96-point reference window. This preserves persistent high-score
+fault alarms while allowing gradual normal regime shifts to update the baseline.
+For a precision-oriented experiment, lower
 `--alpha` and require consecutive candidates, for example
 `--alpha 0.001 --alarm_confirmation 3`. The optional `--latch_alarm 1` is only
 appropriate when faults are known to persist until the end of a flight segment.
+Experiment directories use a compact configuration fingerprint to stay within
+Windows path limits. The complete resolved arguments are saved as
+`checkpoints/<setting>/experiment_config.json`.
 
 See `PAPER_ALIGNMENT.md` for the equation-by-equation alignment status and the
 implementation details that the paper and placeholder repository do not expose.
@@ -101,5 +109,5 @@ To reproduce the Table III train/validation row counts exactly, include the
 `no_ground_truth` file explicitly:
 
 ```bash
-python scripts/preprocess_alfa.py --include-no-ground-truth
+python scripts/preprocess_alfa.py --split-policy paper --include-no-ground-truth
 ```

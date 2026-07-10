@@ -1,3 +1,4 @@
+import json
 import os
 import time
 import warnings
@@ -43,8 +44,12 @@ class Exp_Anomaly_Detection(Exp_Basic):
     def _select_optimizer(self):
         return optim.Adam(self.model.parameters(), lr=self.args.learning_rate)
 
+    @staticmethod
+    def _reconstruction_loss(outputs, targets):
+        return (outputs - targets).pow(2).flatten(start_dim=1).sum(dim=1).mean()
+
     def _select_criterion(self):
-        return nn.MSELoss()
+        return self._reconstruction_loss
 
     def _forward_model(self, batch_x, batch_m):
         if self.args.model == "MSTGCNet":
@@ -71,6 +76,22 @@ class Exp_Anomaly_Detection(Exp_Basic):
 
         path = os.path.join(self.args.checkpoints, setting)
         os.makedirs(path, exist_ok=True)
+        config = {
+            key: str(value) if isinstance(value, torch.device) else value
+            for key, value in vars(self.args).items()
+        }
+        with open(
+            os.path.join(path, "experiment_config.json"),
+            "w",
+            encoding="utf-8",
+        ) as file:
+            json.dump(
+                {"setting": setting, "args": config},
+                file,
+                ensure_ascii=False,
+                indent=2,
+                default=str,
+            )
         train_steps = len(train_loader)
         early_stopping = EarlyStopping(patience=self.args.patience, verbose=True)
         model_optim = self._select_optimizer()
@@ -80,6 +101,19 @@ class Exp_Anomaly_Detection(Exp_Basic):
         for epoch in range(self.args.train_epochs):
             iter_count = 0
             train_loss = []
+            reconstruction_losses = []
+            balance_losses = []
+            model_for_stats = (
+                self.model.module
+                if isinstance(self.model, nn.DataParallel)
+                else self.model
+            )
+            routing_loads = [
+                np.zeros(block.num_experts, dtype=np.float64)
+                for block in model_for_stats.blocks
+            ]
+            routing_entropy = np.zeros(len(model_for_stats.blocks), dtype=np.float64)
+            routing_samples = 0
             self.model.train()
             epoch_time = time.time()
 
@@ -90,8 +124,22 @@ class Exp_Anomaly_Detection(Exp_Basic):
                 batch_m = batch_m.float().to(self.device)
 
                 outputs, balance_loss = self._forward_model(batch_x, batch_m)
-                loss = criterion(outputs, batch_x) + balance_loss
+                reconstruction_loss = criterion(outputs, batch_x)
+                loss = reconstruction_loss + balance_loss
                 train_loss.append(loss.item())
+                reconstruction_losses.append(reconstruction_loss.item())
+                balance_losses.append(balance_loss.item())
+                routing_samples += batch_x.size(0)
+                for block_idx, block in enumerate(model_for_stats.blocks):
+                    router = block.router
+                    if router.last_expert_load is not None:
+                        routing_loads[block_idx] += (
+                            router.last_expert_load.detach().cpu().numpy()
+                        )
+                    if router.last_entropy is not None:
+                        routing_entropy[block_idx] += (
+                            float(router.last_entropy) * batch_x.size(0)
+                        )
 
                 if (i + 1) % 100 == 0:
                     print(
@@ -116,13 +164,40 @@ class Exp_Anomaly_Detection(Exp_Basic):
 
             print("Epoch: {} cost time: {}".format(epoch + 1, time.time() - epoch_time))
             train_loss = float(np.average(train_loss)) if train_loss else 0.0
+            reconstruction_loss = (
+                float(np.average(reconstruction_losses))
+                if reconstruction_losses
+                else 0.0
+            )
+            balance_loss = (
+                float(np.average(balance_losses)) if balance_losses else 0.0
+            )
             vali_loss = self.vali(vali_data, vali_loader, criterion)
             print(
                 "Epoch: {0}, Steps: {1} | Train Loss: {2:.7f} "
-                "Vali Loss: {3:.7f}".format(
-                    epoch + 1, train_steps, train_loss, vali_loss
+                "Rec Loss: {3:.7f} Balance Loss: {4:.7f} "
+                "Vali Loss: {5:.7f}".format(
+                    epoch + 1,
+                    train_steps,
+                    train_loss,
+                    reconstruction_loss,
+                    balance_loss,
+                    vali_loss,
                 )
             )
+            if routing_samples:
+                for block_idx, load in enumerate(routing_loads):
+                    total = load.sum()
+                    fractions = load / total if total else load
+                    entropy = routing_entropy[block_idx] / routing_samples
+                    print(
+                        "  Router block {} | load={} fractions={} entropy={:.6f}".format(
+                            block_idx + 1,
+                            load.astype(int).tolist(),
+                            np.round(fractions, 4).tolist(),
+                            entropy,
+                        )
+                    )
 
             early_stopping(vali_loss, self.model, path)
             if early_stopping.early_stop:
@@ -423,6 +498,7 @@ class Exp_Anomaly_Detection(Exp_Basic):
                 segment_ids=score_segments,
                 confirmation=self.args.alarm_confirmation,
                 latch_alarm=bool(self.args.latch_alarm),
+                adaptation_clip=self.args.threshold_adaptation_clip,
             )
 
         gt = test_labels.astype(int)

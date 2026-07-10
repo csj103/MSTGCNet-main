@@ -1,4 +1,6 @@
 import argparse
+import hashlib
+import json
 import os
 import random
 
@@ -7,6 +9,13 @@ import torch
 
 from exp.exp_anomaly_detection import Exp_Anomaly_Detection
 from utils.print_args import print_args
+
+
+REPRO_PATCH_SIZE_LIST = [
+    [8, 12, 16, 32],
+    [6, 8, 12, 16],
+    [2, 6, 8, 12],
+]
 
 
 def str2bool(value):
@@ -39,7 +48,7 @@ def build_parser():
     parser.add_argument("--seq_len", type=int, default=96)
     parser.add_argument("--label_len", type=int, default=0)
     parser.add_argument("--pred_len", type=int, default=0)
-    parser.add_argument("--anomaly_ratio", type=float, default=25.0)
+    parser.add_argument("--anomaly_ratio", type=float, default=None)
     parser.add_argument(
         "--threshold_method",
         type=str,
@@ -58,7 +67,7 @@ def build_parser():
         ),
     )
     parser.add_argument("--paper_strict", type=str2bool, default=True)
-    parser.add_argument("--implementation_tag", type=str, default="paper_v6")
+    parser.add_argument("--implementation_tag", type=str, default="v10_balanced")
     parser.add_argument(
         "--score_normalization",
         type=str,
@@ -105,7 +114,7 @@ def build_parser():
         "--patch_size_list",
         nargs="+",
         type=int,
-        default=[2, 6, 8, 12, 6, 8, 12, 16, 8, 12, 16, 32],
+        default=[size for layer in REPRO_PATCH_SIZE_LIST for size in layer],
     )
     parser.add_argument("--noisy_gating", type=int, default=1)
     parser.add_argument("--trend_kernel_sizes", nargs="+", type=int, default=[4, 8, 12])
@@ -115,6 +124,7 @@ def build_parser():
     parser.add_argument("--alpha", type=float, default=0.01)
     parser.add_argument("--alarm_confirmation", type=int, default=1)
     parser.add_argument("--latch_alarm", type=int, choices=[0, 1], default=0)
+    parser.add_argument("--threshold_adaptation_clip", type=float, default=2.0)
     parser.add_argument("--abl_GCN", type=int, default=0)
     parser.add_argument("--abl_thre", type=int, default=1)
     parser.add_argument("--residual_connection", type=int, default=1)
@@ -172,6 +182,11 @@ def validate_paper_args(args):
         mismatches.append(
             f"--patch_size_list contains values outside paper pool {sorted(patch_pool)}"
         )
+    if args.patch_size_list != REPRO_PATCH_SIZE_LIST:
+        mismatches.append(
+            "--patch_size_list must match the configured coarse-to-fine "
+            f"reproduction assignment {REPRO_PATCH_SIZE_LIST!r}"
+        )
     if mismatches:
         details = "\n  - ".join(mismatches)
         raise ValueError(
@@ -182,6 +197,19 @@ def validate_paper_args(args):
 
 
 def normalize_args(args):
+    metadata = {}
+    metadata_path = os.path.join(args.root_path, "metadata.json")
+    if os.path.exists(metadata_path):
+        with open(metadata_path, "r", encoding="utf-8") as file:
+            metadata = json.load(file)
+    args.dataset_split = str(metadata.get("split_policy", "unknown"))
+    args.split_seed = metadata.get("split_seed", "na")
+    if args.anomaly_ratio is None:
+        test_ratio = metadata.get("test_anomaly_ratio")
+        args.anomaly_ratio = (
+            float(test_ratio) * 100.0 if test_ratio is not None else 25.0
+        )
+
     if torch.cuda.is_available() and args.use_gpu and args.gpu_type == "cuda":
         args.device = torch.device(f"cuda:{args.gpu}")
     elif args.use_gpu and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
@@ -217,6 +245,39 @@ def normalize_args(args):
     return args
 
 
+def build_setting(args, iteration):
+    excluded = {
+        "checkpoints",
+        "device",
+        "devices",
+        "device_ids",
+        "gpu",
+        "gpu_type",
+        "is_training",
+        "itr",
+        "num_workers",
+        "use_gpu",
+        "use_multi_gpu",
+    }
+    fingerprint_payload = {
+        key: value
+        for key, value in vars(args).items()
+        if key not in excluded
+    }
+    serialized = json.dumps(
+        fingerprint_payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    fingerprint = hashlib.sha1(serialized.encode("utf-8")).hexdigest()[:10]
+    return (
+        f"{args.model_id}_{args.model}_sl{args.seq_len}_dm{args.d_model}"
+        f"_el{args.e_layers}_{args.score_mode}_{args.threshold_method}"
+        f"_{args.implementation_tag}_cfg{fingerprint}_{iteration}"
+    )
+
+
 if __name__ == "__main__":
     fix_seed = 2025
     random.seed(fix_seed)
@@ -235,15 +296,7 @@ if __name__ == "__main__":
     os.makedirs(args.checkpoints, exist_ok=True)
 
     for ii in range(args.itr):
-        setting = (
-            f"{args.task_name}_{args.model_id}_{args.model}_{args.data}"
-            f"_sl{args.seq_len}_dm{args.d_model}_nh{args.n_heads}"
-            f"_ke{args.top_k}_kn{args.knn_k}_el{args.e_layers}"
-            f"_ws{args.winsize}_ap{args.alpha}_df{args.d_ff}"
-            f"_eb{args.embed}_tm{args.threshold_method}"
-            f"_sn{args.score_normalization}"
-            f"_im{args.implementation_tag}_{ii}"
-        )
+        setting = build_setting(args, ii)
         exp = exp_cls(args)
         if args.is_training:
             print(f">>>>>>>start training : {setting}>>>>>>>>>>>>>>>>>>>>>>>>>>")

@@ -74,6 +74,7 @@ def causal_atssd(
     min_history=None,
     confirmation=1,
     latch_alarm=False,
+    adaptation_clip=2.0,
 ):
     """Causal threshold for pointwise detection of persistent anomalies.
 
@@ -102,6 +103,7 @@ def causal_atssd(
                 min_history=min_history,
                 confirmation=confirmation,
                 latch_alarm=latch_alarm,
+                adaptation_clip=adaptation_clip,
             )
             detections[start:end] = segment_pred
             thresholds[start:end] = segment_threshold
@@ -110,6 +112,7 @@ def causal_atssd(
     min_history = min_history or window_size
     min_history = max(2, min(min_history, window_size))
     confirmation = max(1, int(confirmation))
+    adaptation_clip = max(0.0, float(adaptation_clip))
     z_value = NormalDist().inv_cdf(1 - alpha)
     detections = np.zeros(total, dtype=np.int8)
     thresholds = np.zeros(total, dtype=float)
@@ -138,6 +141,9 @@ def causal_atssd(
         is_candidate = score > threshold
         if is_candidate:
             candidate_run += 1
+            scale = max(std_t, abs(mean_t) * 1e-2, 1e-8)
+            clipped_score = min(score, mean_t + adaptation_clip * scale)
+            normal_history.append(clipped_score)
         else:
             candidate_run = 0
             normal_history.append(score)

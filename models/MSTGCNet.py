@@ -3,15 +3,8 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.distributions.normal import Normal
 
 from layers.RevIN import RevIN
-
-
-def cv_squared(x, eps=1e-10):
-    if x.numel() <= 1:
-        return torch.zeros((), dtype=x.dtype, device=x.device)
-    return x.float().var(unbiased=False) / (x.float().mean().pow(2) + eps)
 
 
 class PositionalEncoding(nn.Module):
@@ -48,12 +41,13 @@ class TrendSeasonalRouter(nn.Module):
         self.trend_kernel_sizes = trend_kernel_sizes
         self.seasonality_k = seasonality_k
         self.noisy = noisy
+        self.last_expert_load = None
+        self.last_entropy = None
         self.trend_score = nn.Linear(1, len(trend_kernel_sizes))
+        self.merge = nn.Linear(d_model, d_model)
         self.channel_projection = nn.Linear(d_model, 1)
         self.router = nn.Linear(seq_len, num_experts)
         self.noise = nn.Linear(seq_len, num_experts)
-        self.register_buffer("normal_mean", torch.tensor(0.0))
-        self.register_buffer("normal_std", torch.tensor(1.0))
 
     def _seasonal(self, x):
         # x: [B, L, D]
@@ -85,53 +79,33 @@ class TrendSeasonalRouter(nn.Module):
         weights = torch.softmax(self.trend_score(x.unsqueeze(-1)), dim=-1)
         return (stacked * weights).sum(dim=-1)
 
-    def _prob_in_top_k(self, clean_logits, noisy_logits, noise_std, top_values):
-        batch_size = clean_logits.size(0)
-        values_per_sample = top_values.size(1)
-        flat_values = top_values.flatten()
-        threshold_positions = (
-            torch.arange(batch_size, device=clean_logits.device) * values_per_sample
-            + self.top_k
-        )
-        threshold_if_in = flat_values.gather(0, threshold_positions).unsqueeze(1)
-        threshold_if_out = flat_values.gather(
-            0, threshold_positions - 1
-        ).unsqueeze(1)
-        is_in = noisy_logits > threshold_if_in
-        normal = Normal(self.normal_mean, self.normal_std)
-        prob_if_in = normal.cdf((clean_logits - threshold_if_in) / noise_std)
-        prob_if_out = normal.cdf((clean_logits - threshold_if_out) / noise_std)
-        return torch.where(is_in, prob_if_in, prob_if_out)
-
     def forward(self, x):
         seasonal = self._seasonal(x)
         trend = self._trend(x)
-        transformed = x + seasonal + trend
+        transformed = self.merge(x + seasonal + trend)
         routing_input = self.channel_projection(transformed).squeeze(-1)
         clean_logits = self.router(routing_input)
-        noise_std = None
         if self.training and self.noisy:
             noise_std = F.softplus(self.noise(routing_input)) + 1e-2
             logits = clean_logits + torch.randn_like(clean_logits) * noise_std
         else:
             logits = clean_logits
 
-        top_count = min(self.top_k + 1, self.num_experts)
-        top_values, top_indices = logits.topk(top_count, dim=1)
-        selected_values = top_values[:, : self.top_k]
-        selected_indices = top_indices[:, : self.top_k]
-        selected_gates = torch.softmax(selected_values, dim=1)
-        gates = torch.zeros_like(logits).scatter(
-            1, selected_indices, selected_gates
+        weights = torch.softmax(logits, dim=1)
+        selected_indices = weights.topk(self.top_k, dim=1).indices
+        hard_gates = torch.zeros_like(weights).scatter(
+            1, selected_indices, 1.0
+        )
+        sparse_weights = weights * hard_gates
+        self.last_expert_load = hard_gates.detach().sum(dim=0)
+        self.last_entropy = (
+            -(weights * weights.clamp_min(1e-12).log()).sum(dim=1).mean().detach()
         )
 
-        if self.training and self.noisy and self.top_k < self.num_experts:
-            load = self._prob_in_top_k(
-                clean_logits, logits, noise_std, top_values
-            ).sum(dim=0)
-        else:
-            load = (gates > 0).sum(dim=0).to(gates.dtype)
-        return gates, load, transformed
+        # Eq. (25) uses hard expert counts. The straight-through form preserves
+        # those counts in the forward pass while providing router gradients.
+        balance_gates = hard_gates + weights - weights.detach()
+        return sparse_weights, balance_gates, transformed
 
 
 class CCSTGCNExpert(nn.Module):
@@ -213,13 +187,16 @@ class CCSTGCNExpert(nn.Module):
         norm = degree.rsqrt().unsqueeze(1) * adj * degree.rsqrt().unsqueeze(0)
         return norm
 
-    def forward(self, x):
-        patches = self._patch(x)
-        attn_input = self.attention_in(patches.reshape(-1, self.patch_size, 1))
+    def _temporal_encode(self, patches):
+        batch_size, num_nodes, patch_size = patches.shape
+        attn_input = self.attention_in(patches.reshape(-1, patch_size, 1))
         attn_output, _ = self.temporal_attn(attn_input, attn_input, attn_input)
-        patches = self.attention_out(attn_output).reshape(
-            x.size(0), self.num_nodes, self.patch_size
+        return self.attention_out(attn_output).reshape(
+            batch_size, num_nodes, patch_size
         )
+
+    def forward(self, x):
+        patches = self._temporal_encode(self._patch(x))
 
         if self.abl_gcn:
             identity = torch.eye(
@@ -288,20 +265,33 @@ class GMoEBlock(nn.Module):
         )
 
     def forward(self, x):
-        gates, load, _ = self.router(x)
+        sparse_weights, balance_gates, _ = self.router(x)
 
-        expert_outputs = []
+        expert_contributions = []
         adj_list = []
-        for expert in self.experts:
-            out, adj = expert(x)
-            expert_outputs.append(out)
+        for expert_idx, expert in enumerate(self.experts):
+            selected = sparse_weights[:, expert_idx] > 0
+            selected_indices = selected.nonzero(as_tuple=False).squeeze(-1)
+            contribution = torch.zeros_like(x)
+            if selected_indices.numel() > 0:
+                expert_output, adj = expert(x.index_select(0, selected_indices))
+                expert_weight = sparse_weights.index_select(
+                    0, selected_indices
+                )[:, expert_idx].view(-1, 1, 1)
+                contribution = contribution.index_copy(
+                    0, selected_indices, expert_output * expert_weight
+                )
+            else:
+                adj = None
+            expert_contributions.append(contribution)
             adj_list.append(adj)
 
-        stacked = torch.stack(expert_outputs, dim=-1)
-        mixed = torch.einsum("blde,be->bld", stacked, gates)
+        mixed = torch.stack(expert_contributions, dim=0).sum(dim=0)
 
-        importance = gates.sum(dim=0)
-        balance_loss = cv_squared(importance) + cv_squared(load)
+        expert_load = balance_gates.sum(dim=0)
+        balance_loss = expert_load.var(unbiased=False) / expert_load.mean().clamp_min(
+            1e-10
+        )
         return x + mixed, balance_loss, adj_list
 
 
