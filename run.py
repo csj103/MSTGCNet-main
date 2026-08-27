@@ -67,7 +67,7 @@ def build_parser():
         ),
     )
     parser.add_argument("--paper_strict", type=str2bool, default=True)
-    parser.add_argument("--implementation_tag", type=str, default="v10_balanced")
+    parser.add_argument("--implementation_tag", type=str, default="v12_finegrained")
     parser.add_argument(
         "--score_normalization",
         type=str,

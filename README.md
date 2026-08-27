@@ -8,11 +8,10 @@ Multiscale Spatio-Temporal Graph Convolutional Network for UAV Anomaly Detection
 
 The selected ALFA files in `alfa_10vars/` can be converted to the format expected by
 `Dataset_ALFA`. By default, files whose names contain `no_ground_truth` are excluded.
-The default `fault_balanced` policy assigns complete flights to one split only.
-It selects whole fault flights whose anomaly totals are closest to the scarcest
-fault type, then splits the remaining flights into normal-only training and
-validation sets. This avoids flight leakage and prevents engine/aileron faults
-from dominating the test metrics.
+The default `fine_grained` policy assigns complete flights to one split only and
+holds out at least one labelled flight for every fine-grained anomaly type
+available in the local ALFA subset. Training and validation contain normal rows
+only, so the threshold and early stopping do not see fault labels.
 
 ```bash
 python scripts/preprocess_alfa.py
@@ -22,8 +21,8 @@ This creates:
 
 - `dataset/ALFA10vars/train.csv` and `val.csv`: normal points from disjoint
   training and validation flights.
-- `dataset/ALFA10vars/test.csv`: complete held-out fault flights with balanced
-  anomaly totals across engine, elevator, aileron, and rudder faults.
+- `dataset/ALFA10vars/test.csv`: complete held-out fault flights covering all
+  fine-grained ALFA anomaly types found in `alfa_10vars/`.
 - `dataset/ALFA10vars/*_meta.csv`: flight and segment
   metadata used to prevent sliding windows from crossing discontinuous flights.
 - `dataset/ALFA10vars/split_summary.csv`: per-flight split and label summary.
@@ -66,9 +65,10 @@ released experiment scaffold, use:
 python run.py --score_mode paper_nonoverlap
 ```
 
-The paper-aligned defaults are checked at startup by `--paper_strict true`.
+The paper-aligned model and training defaults are checked at startup by
+`--paper_strict true`.
 Changing a Table IV setting raises an error; pass `--paper_strict false` only
-for ablations. The new implementation uses the `v10_balanced` experiment tag so
+for ablations. The new implementation uses the `v12_finegrained` experiment tag so
 that checkpoints produced by earlier incompatible model definitions cannot be
 loaded accidentally.
 
@@ -76,7 +76,7 @@ For deployable pointwise detection, use the causal normal-history threshold
 and calibrate each variable by its normal training reconstruction error:
 
 ```bash
-python run.py --threshold_method causal_atssd --score_normalization train_feature --paper_strict false --implementation_tag point_v10_balanced
+python run.py --threshold_method causal_atssd --score_normalization train_feature --paper_strict false --implementation_tag point_v12_finegrained
 ```
 
 Unlike paper ATSSD, `causal_atssd` feeds a clipped form of detected high-score
@@ -103,6 +103,12 @@ For a stricter flight-level split instead, use:
 
 ```bash
 python scripts/preprocess_alfa.py --split-policy flight
+```
+
+For the older balanced-by-coarse-fault diagnostic split, use:
+
+```bash
+python scripts/preprocess_alfa.py --split-policy fault_balanced
 ```
 
 To reproduce the Table III train/validation row counts exactly, include the

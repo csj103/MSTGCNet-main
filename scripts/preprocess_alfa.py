@@ -1,9 +1,19 @@
 import argparse
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from utils.alfa_anomaly_types import (
+    FINE_GRAINED_ANOMALY_TYPES,
+    add_fine_anomaly_type,
+)
 
 
 FEATURE_COLUMNS = [
@@ -26,6 +36,7 @@ META_COLUMNS = [
     "source_file",
     "flight_id",
     "fault_type",
+    "fine_anomaly_type",
     "original_index",
     "segment_id",
     "time_sec",
@@ -59,12 +70,14 @@ def parse_args():
     )
     parser.add_argument(
         "--split-policy",
-        choices=["fault_balanced", "paper", "flight"],
-        default="fault_balanced",
+        choices=["paper", "fine_grained", "flight", "fault_balanced"],
+        default="fine_grained",
         help=(
-            "fault_balanced: split whole flights and balance test anomaly counts; "
             "paper: match the ALFA counts reported by the paper; "
-            "flight: use normal flights for train and fault flights for test."
+            "fine_grained: keep every fine-grained ALFA anomaly type in test; "
+            "flight: use normal flights for train and fault flights for test; "
+            "fault_balanced: split whole flights and balance test anomaly counts; "
+            "kept for ablation/diagnostics."
         ),
     )
     parser.add_argument("--val-ratio", type=float, default=0.15)
@@ -86,6 +99,7 @@ def load_flight(path):
     df["source_file"] = path.name
     df["label"] = df[LABEL_COLUMN].fillna(0).astype(int)
     df.loc[df["label"] != 0, "label"] = 1
+    df = add_fine_anomaly_type(df)
     return df
 
 
@@ -99,6 +113,7 @@ def summarize_flights(df):
         .agg(
             flight_id=("flight_id", "first"),
             fault_type=("fault_type", "first"),
+            fine_anomaly_type=("fine_anomaly_type", "first"),
             rows=("label", "size"),
             anomaly_rows=("label", "sum"),
         )
@@ -181,6 +196,101 @@ def split_by_flight(data):
     return train, test, all_with_split
 
 
+def _flight_summary(data):
+    return (
+        data.groupby("source_file", sort=True)
+        .agg(
+            flight_id=("flight_id", "first"),
+            fault_type=("fault_type", "first"),
+            fine_anomaly_type=("fine_anomaly_type", "first"),
+            rows=("label", "size"),
+            anomaly_rows=("label", "sum"),
+        )
+        .reset_index()
+    )
+
+
+def _select_representative_fine_type_files(flights):
+    fault_flights = flights[flights["anomaly_rows"] > 0].copy()
+    available_types = set(fault_flights["fine_anomaly_type"].unique())
+    missing_types = set(FINE_GRAINED_ANOMALY_TYPES) - available_types
+    if missing_types:
+        raise ValueError(
+            "Missing fine-grained ALFA anomaly type(s): "
+            + ", ".join(sorted(missing_types))
+        )
+
+    selected = []
+    for fine_type in FINE_GRAINED_ANOMALY_TYPES:
+        group = fault_flights[fault_flights["fine_anomaly_type"].eq(fine_type)]
+        if fine_type == "Left aileron stuck at zero":
+            single_fault_group = group[
+                ~group["source_file"].str.contains("rudder_zero__", case=False)
+            ]
+            if not single_fault_group.empty:
+                group = single_fault_group
+        target = group["anomaly_rows"].median()
+        ranked = group.assign(
+            distance=(group["anomaly_rows"] - target).abs()
+        ).sort_values(["distance", "anomaly_rows", "source_file"])
+        selected.append(ranked.iloc[0]["source_file"])
+    return set(selected)
+
+
+def _assign_remaining_validation_files(flights, test_files, val_ratio, seed):
+    rng = np.random.default_rng(seed)
+    remaining = flights[~flights["source_file"].isin(test_files)]
+    val_files = set()
+    for _, group in remaining.groupby("fault_type", sort=True):
+        files = sorted(group["source_file"].tolist())
+        rng.shuffle(files)
+        if len(files) < 2 or val_ratio == 0:
+            continue
+        val_count = max(1, int(round(len(files) * val_ratio)))
+        val_count = min(val_count, len(files) - 1)
+        val_files.update(files[:val_count])
+    return val_files
+
+
+def _apply_file_assignment(data, assignment):
+    all_with_split = data.copy()
+    all_with_split["split"] = all_with_split["source_file"].map(assignment)
+    discarded_anomaly = (
+        all_with_split["split"].isin(["train", "val"])
+        & all_with_split["label"].eq(1)
+    )
+    all_with_split.loc[discarded_anomaly, "split"] = "unused"
+
+    train = assign_segments(all_with_split[all_with_split["split"].eq("train")])
+    val = assign_segments(all_with_split[all_with_split["split"].eq("val")])
+    test = assign_segments(all_with_split[all_with_split["split"].eq("test")])
+    return train, val, test, all_with_split
+
+
+def split_fine_grained_test(data, val_ratio=0.15, seed=2025):
+    if not 0 <= val_ratio < 1:
+        raise ValueError("--val-ratio must be in [0, 1).")
+
+    flights = _flight_summary(data)
+    test_files = _select_representative_fine_type_files(flights)
+    val_files = _assign_remaining_validation_files(
+        flights,
+        test_files=test_files,
+        val_ratio=val_ratio,
+        seed=seed,
+    )
+
+    assignment = {}
+    for source_file in flights["source_file"]:
+        if source_file in test_files:
+            assignment[source_file] = "test"
+        elif source_file in val_files:
+            assignment[source_file] = "val"
+        else:
+            assignment[source_file] = "train"
+    return _apply_file_assignment(data, assignment)
+
+
 def closest_anomaly_subset(group, target, max_files=None):
     records = [
         (row.source_file, int(row.anomaly_rows))
@@ -213,15 +323,7 @@ def split_fault_balanced(data, val_ratio=0.15, seed=2025):
     if not 0 <= val_ratio < 1:
         raise ValueError("--val-ratio must be in [0, 1).")
 
-    flights = (
-        data.groupby("source_file", sort=True)
-        .agg(
-            fault_type=("fault_type", "first"),
-            rows=("label", "size"),
-            anomaly_rows=("label", "sum"),
-        )
-        .reset_index()
-    )
+    flights = _flight_summary(data)
     fault_flights = flights[flights["anomaly_rows"] > 0]
     anomaly_totals = fault_flights.groupby("fault_type")["anomaly_rows"].sum()
     if anomaly_totals.empty:
@@ -243,17 +345,12 @@ def split_fault_balanced(data, val_ratio=0.15, seed=2025):
             closest_anomaly_subset(group, target, max_files=len(group) - 1)
         )
 
-    rng = np.random.default_rng(seed)
-    remaining = flights[~flights["source_file"].isin(test_files)]
-    val_files = set()
-    for _, group in remaining.groupby("fault_type", sort=True):
-        files = sorted(group["source_file"].tolist())
-        rng.shuffle(files)
-        if len(files) < 2 or val_ratio == 0:
-            continue
-        val_count = max(1, int(round(len(files) * val_ratio)))
-        val_count = min(val_count, len(files) - 1)
-        val_files.update(files[:val_count])
+    val_files = _assign_remaining_validation_files(
+        flights,
+        test_files=test_files,
+        val_ratio=val_ratio,
+        seed=seed,
+    )
 
     assignment = {}
     for source_file in flights["source_file"]:
@@ -264,20 +361,7 @@ def split_fault_balanced(data, val_ratio=0.15, seed=2025):
         else:
             assignment[source_file] = "train"
 
-    all_with_split = data.copy()
-    all_with_split["split"] = all_with_split["source_file"].map(assignment)
-    discarded_anomaly = (
-        all_with_split["split"].isin(["train", "val"])
-        & all_with_split["label"].eq(1)
-    )
-    all_with_split.loc[discarded_anomaly, "split"] = "unused"
-
-    train = all_with_split[all_with_split["split"].eq("train")].copy()
-    val = all_with_split[all_with_split["split"].eq("val")].copy()
-    test = all_with_split[all_with_split["split"].eq("test")].copy()
-    train = assign_segments(train)
-    val = assign_segments(val)
-    test = assign_segments(test)
+    train, val, test, all_with_split = _apply_file_assignment(data, assignment)
     return train, val, test, all_with_split, target
 
 
@@ -319,6 +403,12 @@ def main():
             val_ratio=args.val_ratio,
             seed=args.seed,
         )
+    elif args.split_policy == "fine_grained":
+        train, val, test, all_with_split = split_fine_grained_test(
+            data,
+            val_ratio=args.val_ratio,
+            seed=args.seed,
+        )
     elif args.split_policy == "paper":
         train, test, all_with_split = split_like_paper(data)
     else:
@@ -345,6 +435,10 @@ def main():
     if val is not None:
         val_output.to_csv(output / "val.csv", index=False)
         val_meta.to_csv(output / "val_meta.csv", index=False)
+    else:
+        for stale_path in (output / "val.csv", output / "val_meta.csv"):
+            if stale_path.exists():
+                stale_path.unlink()
 
     summary = summarize_flights(all_with_split)
     summary.to_csv(output / "split_summary.csv", index=False)
@@ -362,7 +456,10 @@ def main():
             len(train_output) + (len(val_output) if val is not None else 0)
         ),
         "paper_train_val_target_rows": int(PAPER_TRAIN_VAL_ROWS),
-        "matched_paper_train_val_rows": bool(len(train_output) == PAPER_TRAIN_VAL_ROWS),
+        "matched_paper_train_val_rows": bool(
+            len(train_output) + (len(val_output) if val is not None else 0)
+            == PAPER_TRAIN_VAL_ROWS
+        ),
         "loader_train_rows": (
             int(len(train_output))
             if val is not None
@@ -386,6 +483,11 @@ def main():
         "test_anomaly_rows_by_fault": {
             str(name): int(value)
             for name, value in test.groupby("fault_type")["label"].sum().items()
+            if int(value) > 0
+        },
+        "test_anomaly_rows_by_fine_type": {
+            str(name): int(value)
+            for name, value in test.groupby("fine_anomaly_type")["label"].sum().items()
             if int(value) > 0
         },
         "flight_counts_by_split": {

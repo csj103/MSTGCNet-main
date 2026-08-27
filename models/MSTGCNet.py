@@ -3,6 +3,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.distributions.normal import Normal
 
 from layers.RevIN import RevIN
 
@@ -48,6 +49,12 @@ class TrendSeasonalRouter(nn.Module):
         self.channel_projection = nn.Linear(d_model, 1)
         self.router = nn.Linear(seq_len, num_experts)
         self.noise = nn.Linear(seq_len, num_experts)
+        self.router_norm = nn.LayerNorm(num_experts)
+        self.noise_norm = nn.LayerNorm(num_experts)
+        self.softplus = nn.Softplus()
+        self.softmax = nn.Softmax(dim=1)
+        self.register_buffer("normal_mean", torch.tensor([0.0]))
+        self.register_buffer("normal_std", torch.tensor([1.0]))
 
     def _seasonal(self, x):
         # x: [B, L, D]
@@ -79,33 +86,68 @@ class TrendSeasonalRouter(nn.Module):
         weights = torch.softmax(self.trend_score(x.unsqueeze(-1)), dim=-1)
         return (stacked * weights).sum(dim=-1)
 
+    def _gates_to_load(self, gates):
+        return (gates > 0).sum(dim=0)
+
+    def _prob_in_top_k(self, clean_logits, noisy_logits, noise_std, top_logits):
+        batch_size = clean_logits.size(0)
+        top_count = top_logits.size(1)
+        top_values = top_logits.flatten()
+        threshold_positions_if_in = (
+            torch.arange(batch_size, device=clean_logits.device) * top_count
+            + self.top_k
+        )
+        threshold_if_in = top_values.gather(0, threshold_positions_if_in).unsqueeze(1)
+        threshold_if_out = top_values.gather(
+            0, threshold_positions_if_in - 1
+        ).unsqueeze(1)
+        is_in = noisy_logits > threshold_if_in
+        scaled_if_in = (clean_logits - threshold_if_in) / (noise_std + 1e-8)
+        scaled_if_out = (clean_logits - threshold_if_out) / (noise_std + 1e-8)
+        scaled_if_in = scaled_if_in.clamp(min=-10.0, max=10.0)
+        scaled_if_out = scaled_if_out.clamp(min=-10.0, max=10.0)
+        normal = Normal(self.normal_mean, self.normal_std)
+        prob_if_in = normal.cdf(scaled_if_in)
+        prob_if_out = normal.cdf(scaled_if_out)
+        return torch.where(is_in, prob_if_in, prob_if_out)
+
     def forward(self, x):
         seasonal = self._seasonal(x)
         trend = self._trend(x)
         transformed = self.merge(x + seasonal + trend)
         routing_input = self.channel_projection(transformed).squeeze(-1)
-        clean_logits = self.router(routing_input)
+        clean_logits = self.router_norm(self.router(routing_input))
         if self.training and self.noisy:
-            noise_std = F.softplus(self.noise(routing_input)) + 1e-2
-            logits = clean_logits + torch.randn_like(clean_logits) * noise_std
+            noise_std = self.softplus(self.noise_norm(self.noise(routing_input)))
+            noise_std = (noise_std + 1e-2).clamp(max=1.0)
+            noisy_logits = clean_logits + torch.randn_like(clean_logits) * noise_std
+            logits = noisy_logits
         else:
+            noise_std = None
+            noisy_logits = None
             logits = clean_logits
 
-        weights = torch.softmax(logits, dim=1)
-        selected_indices = weights.topk(self.top_k, dim=1).indices
-        hard_gates = torch.zeros_like(weights).scatter(
-            1, selected_indices, 1.0
+        top_logits, top_indices = logits.topk(
+            min(self.top_k + 1, self.num_experts), dim=1
         )
-        sparse_weights = weights * hard_gates
-        self.last_expert_load = hard_gates.detach().sum(dim=0)
-        self.last_entropy = (
-            -(weights * weights.clamp_min(1e-12).log()).sum(dim=1).mean().detach()
-        )
+        top_logits = top_logits - top_logits.max(dim=1, keepdim=True).values
+        top_k_logits = top_logits[:, : self.top_k]
+        top_k_indices = top_indices[:, : self.top_k]
+        top_k_gates = self.softmax(top_k_logits)
+        gates = torch.zeros_like(logits).scatter(1, top_k_indices, top_k_gates)
 
-        # Eq. (25) uses hard expert counts. The straight-through form preserves
-        # those counts in the forward pass while providing router gradients.
-        balance_gates = hard_gates + weights - weights.detach()
-        return sparse_weights, balance_gates, transformed
+        if self.training and self.noisy and self.top_k < self.num_experts:
+            load = self._prob_in_top_k(
+                clean_logits, noisy_logits, noise_std, top_logits
+            ).sum(dim=0)
+        else:
+            load = self._gates_to_load(gates)
+
+        self.last_expert_load = self._gates_to_load(gates).detach()
+        self.last_entropy = (
+            -(gates * gates.clamp_min(1e-12).log()).sum(dim=1).mean().detach()
+        )
+        return gates, load, transformed
 
 
 class CCSTGCNExpert(nn.Module):
@@ -115,6 +157,7 @@ class CCSTGCNExpert(nn.Module):
         num_vars,
         d_model,
         patch_size,
+        d_ff,
         knn_k,
         attn_heads,
         dropout,
@@ -143,6 +186,14 @@ class CCSTGCNExpert(nn.Module):
         self.graph_weight = nn.Parameter(torch.empty(patch_size, patch_size))
         self.graph_bias = nn.Parameter(torch.zeros(self.num_nodes, patch_size))
         self.to_model = nn.Linear(num_vars, d_model)
+        self.norm_graph = nn.LayerNorm(d_model)
+        self.norm_ffn = nn.LayerNorm(d_model)
+        self.ffn = nn.Sequential(
+            nn.Linear(d_model, d_ff),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_ff, d_model),
+        )
         self.dropout = nn.Dropout(dropout)
         nn.init.xavier_uniform_(self.graph_weight)
 
@@ -156,8 +207,8 @@ class CCSTGCNExpert(nn.Module):
         pad_len = self.num_patches * self.patch_size - self.seq_len
         if pad_len > 0:
             vars_x = F.pad(vars_x, (0, pad_len))
-        patches = vars_x.reshape(
-            x.size(0), self.num_vars, self.num_patches, self.patch_size
+        patches = vars_x.unfold(
+            dimension=-1, size=self.patch_size, step=self.patch_size
         )
         return patches.permute(0, 2, 1, 3).reshape(
             x.size(0), self.num_nodes, self.patch_size
@@ -202,14 +253,20 @@ class CCSTGCNExpert(nn.Module):
             identity = torch.eye(
                 self.num_nodes, device=patches.device, dtype=patches.dtype
             )
-            return self._unpatch(patches), identity
+            hidden = self._unpatch(patches)
+            hidden = self.norm_graph(hidden)
+            hidden = self.norm_ffn(hidden + self.dropout(self.ffn(hidden)))
+            return hidden, identity
 
         adj = self._adjacency()
         graph_out = torch.einsum("ij,bjf->bif", adj, patches)
         graph_out = torch.matmul(graph_out, self.graph_weight) + self.graph_bias
         graph_out = F.gelu(graph_out)
         graph_out = self.dropout(graph_out)
-        return self._unpatch(graph_out), adj
+        hidden = self._unpatch(patches + graph_out)
+        hidden = self.norm_graph(hidden)
+        hidden = self.norm_ffn(hidden + self.dropout(self.ffn(hidden)))
+        return hidden, adj
 
 
 class GMoEBlock(nn.Module):
@@ -255,6 +312,7 @@ class GMoEBlock(nn.Module):
                     num_vars=num_vars,
                     d_model=d_model,
                     patch_size=patch_sizes[i],
+                    d_ff=d_ff,
                     knn_k=knn_k,
                     attn_heads=attn_heads,
                     dropout=dropout,
@@ -265,7 +323,7 @@ class GMoEBlock(nn.Module):
         )
 
     def forward(self, x):
-        sparse_weights, balance_gates, _ = self.router(x)
+        sparse_weights, load, _ = self.router(x)
 
         expert_contributions = []
         adj_list = []
@@ -288,11 +346,17 @@ class GMoEBlock(nn.Module):
 
         mixed = torch.stack(expert_contributions, dim=0).sum(dim=0)
 
-        expert_load = balance_gates.sum(dim=0)
-        balance_loss = expert_load.var(unbiased=False) / expert_load.mean().clamp_min(
-            1e-10
-        )
+        importance = sparse_weights.sum(dim=0)
+        balance_loss = self.cv_squared(importance) + self.cv_squared(load)
         return x + mixed, balance_loss, adj_list
+
+    @staticmethod
+    def cv_squared(values):
+        if values.numel() <= 1:
+            return torch.zeros((), dtype=values.dtype, device=values.device)
+        mean = values.float().mean()
+        variance = values.float().var(unbiased=False)
+        return variance / (mean.pow(2) + 1e-10)
 
 
 class Model(nn.Module):

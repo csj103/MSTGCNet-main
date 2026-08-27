@@ -33,11 +33,16 @@ implementations for the core GMoE and graph modules.
   those two assignments directly.
 - The activation in Eq. (21), balance coefficient `lambda`, padding modes, and
   several initialization details are not reported.
-- The current implementation has about 0.26M trainable parameters, while
+- The current implementation has about 0.46M trainable parameters, while
   Table VII reports 3.2451M. The missing complete expert implementation and
   parameter accounting cannot be recovered from the paper alone.
 - The exact ALFA flight split and resampling procedure are not released. After
   excluding `no_ground_truth`, train/validation counts cannot equal Table III.
+- The default local split is now `fine_grained`: it keeps whole flights intact,
+  puts at least one labelled flight for every available fine-grained ALFA
+  anomaly type in test, and uses normal rows only for train/validation. This is
+  better for Table VIII-style diagnosis, but it is not the hidden split used by
+  the paper.
 - Point adjustment is absent from the paper's evaluation section, although the
   released experiment scaffold applies it before reporting metrics.
 

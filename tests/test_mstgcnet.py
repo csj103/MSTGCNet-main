@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 import torch
 
 from exp.exp_anomaly_detection import Exp_Anomaly_Detection
@@ -53,8 +56,11 @@ def test_router_keeps_sample_specific_temporal_information():
         sparse_weights, _, _ = model.blocks[0].router(hidden)
 
     assert sparse_weights.std(dim=0).mean() > 1e-3
-    assert torch.all(sparse_weights.sum(dim=1) < 1)
-    assert torch.all(sparse_weights.sum(dim=1) > 0)
+    assert torch.allclose(
+        sparse_weights.sum(dim=1),
+        torch.ones(inputs.size(0)),
+        atol=1e-6,
+    )
     assert torch.all(
         (sparse_weights > 0).sum(dim=1) == model.blocks[0].top_k
     )
@@ -115,8 +121,26 @@ def test_sparse_gmoe_executes_only_selected_experts():
     assert calls == [selected_count, selected_count]
 
 
+def test_expert_ffn_uses_configured_d_ff():
+    model = build_model()
+    expert = model.blocks[0].experts[0]
+    assert expert.ffn[0].out_features == expert.ffn[3].in_features
+    assert expert.ffn[0].out_features == 128
+
+    inputs = torch.randn(4, 96, 64)
+    outputs, _ = expert(inputs)
+    loss = outputs.pow(2).mean()
+    loss.backward()
+
+    assert expert.ffn[0].weight.grad is not None
+    assert torch.isfinite(expert.ffn[0].weight.grad).all()
+    assert expert.ffn[0].weight.grad.norm() > 0
+
+
 def test_metadata_ratio_and_config_fingerprint_are_in_setting():
     args = normalize_args(build_parser().parse_args(["--use_gpu", "false"]))
+    metadata_path = Path(args.root_path) / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     setting = build_setting(args, 0)
     changed_args = normalize_args(
         build_parser().parse_args(
@@ -131,7 +155,7 @@ def test_metadata_ratio_and_config_fingerprint_are_in_setting():
         )
     )
     changed_setting = build_setting(changed_args, 0)
-    assert abs(args.anomaly_ratio - 13.4836180341641) < 1e-6
+    assert abs(args.anomaly_ratio - metadata["test_anomaly_ratio"] * 100.0) < 1e-6
     assert len(setting) < 120
     assert "_cfg" in setting
     assert setting == build_setting(args, 0)

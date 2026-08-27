@@ -56,7 +56,7 @@ class Dataset_ALFA(Dataset):
             with open(metadata_path, "r", encoding="utf-8") as file:
                 metadata = json.load(file)
         has_explicit_val = (
-            metadata.get("split_policy") == "fault_balanced"
+            metadata.get("split_policy") in {"fine_grained", "fault_balanced"}
             and os.path.exists(os.path.join(root_path, "val.csv"))
         )
         val_data = (

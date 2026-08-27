@@ -4,6 +4,7 @@ import time
 import warnings
 
 import numpy as np
+import pandas as pd
 import torch
 import torch.multiprocessing
 import torch.nn as nn
@@ -19,6 +20,10 @@ from torch import optim
 from data_provider.data_factory import data_provider
 from exp.exp_basic import Exp_Basic
 from utils.atssd import atssd, causal_atssd
+from utils.alfa_anomaly_types import (
+    anomaly_type_sort_key,
+    canonical_anomaly_type_from_row,
+)
 from utils.tools import EarlyStopping, adjustment, adjust_learning_rate, visual
 
 torch.multiprocessing.set_sharing_strategy("file_system")
@@ -318,7 +323,8 @@ class Exp_Anomaly_Detection(Exp_Basic):
             segment_ids = np.zeros(len(indices), dtype=int)
         return np.concatenate(energies), targets, indices, segment_ids
 
-    def _evaluate_predictions(self, gt, pred):
+    @staticmethod
+    def _evaluate_predictions(gt, pred):
         accuracy = accuracy_score(gt, pred)
         precision, recall, f_score, _ = precision_recall_fscore_support(
             gt, pred, average="binary", zero_division=0
@@ -332,6 +338,7 @@ class Exp_Anomaly_Detection(Exp_Basic):
         )
         energies = []
         targets = []
+        indices = []
         self.model.eval()
         with torch.no_grad():
             for offset in range(0, len(starts), self.args.batch_size):
@@ -361,12 +368,23 @@ class Exp_Anomaly_Detection(Exp_Basic):
                         axis=0,
                     )
                 )
+                indices.append(
+                    np.stack(
+                        [
+                            np.arange(start, start + self.args.seq_len)
+                            for start in batch_starts
+                        ],
+                        axis=0,
+                    )
+                )
 
         if not energies:
-            return np.array([]), np.array([], dtype=int)
+            empty = np.array([], dtype=int)
+            return np.array([]), empty, empty
         return (
             np.concatenate(energies, axis=0).reshape(-1),
             np.concatenate(targets, axis=0).reshape(-1),
+            np.concatenate(indices, axis=0).reshape(-1),
         )
 
     @staticmethod
@@ -412,6 +430,86 @@ class Exp_Anomaly_Detection(Exp_Basic):
         hits = sum(np.any(pred[start:end] == 1) for start, end in zip(starts, ends))
         return int(hits), int(len(starts))
 
+    @staticmethod
+    def _canonical_anomaly_type(row):
+        return canonical_anomaly_type_from_row(row)
+
+    @classmethod
+    def _score_anomaly_types(cls, meta, score_indices):
+        if meta is None or score_indices is None:
+            return None
+        score_indices = np.asarray(score_indices, dtype=int)
+        if score_indices.size == 0:
+            return np.array([], dtype=object)
+        if score_indices.min() < 0 or score_indices.max() >= len(meta):
+            raise IndexError("score_indices are not aligned with test metadata")
+        rows = meta.iloc[score_indices]
+        return rows.apply(cls._canonical_anomaly_type, axis=1).to_numpy()
+
+    @classmethod
+    def _metrics_by_anomaly_type(cls, gt, pred, meta, score_indices):
+        anomaly_types = cls._score_anomaly_types(meta, score_indices)
+        if anomaly_types is None:
+            return []
+
+        rows = []
+        for name in sorted(set(anomaly_types), key=anomaly_type_sort_key):
+            mask = anomaly_types == name
+            if int(gt[mask].sum()) == 0:
+                continue
+            accuracy, precision, recall, f_score, cm = cls._evaluate_predictions(
+                gt[mask], pred[mask]
+            )
+            rows.append(
+                {
+                    "Anomaly Type": name,
+                    "Points": int(mask.sum()),
+                    "Anomalies": int(gt[mask].sum()),
+                    "Predicted": int(pred[mask].sum()),
+                    "Accuracy": float(accuracy),
+                    "Precision": float(precision),
+                    "Recall": float(recall),
+                    "F-score": float(f_score),
+                    "Confusion Matrix": cm.tolist(),
+                }
+            )
+        return rows
+
+    @staticmethod
+    def _format_anomaly_type_table(title, rows):
+        if not rows:
+            return [title + ": unavailable"]
+        lines = [title]
+        header = (
+            "  {name:<30} {acc:>8} {pre:>9} {rec:>8} {f1:>8} "
+            "{points:>8} {anom:>9} {pred:>9}"
+        ).format(
+            name="Anomaly Type",
+            acc="Accuracy",
+            pre="Precision",
+            rec="Recall",
+            f1="F-score",
+            points="Points",
+            anom="Anomalies",
+            pred="Pred",
+        )
+        lines.append(header)
+        for row in rows:
+            lines.append(
+                "  {name:<30} {acc:8.4f} {pre:9.4f} {rec:8.4f} {f1:8.4f} "
+                "{points:8d} {anom:9d} {pred:9d}".format(
+                    name=row["Anomaly Type"][:30],
+                    acc=row["Accuracy"],
+                    pre=row["Precision"],
+                    rec=row["Recall"],
+                    f1=row["F-score"],
+                    points=row["Points"],
+                    anom=row["Anomalies"],
+                    pred=row["Predicted"],
+                )
+            )
+        return lines
+
     def test(self, setting, test=0):
         test_data, _ = self._get_data(flag="test")
         train_data, _ = self._get_data(flag="train")
@@ -453,12 +551,11 @@ class Exp_Anomaly_Detection(Exp_Basic):
                 )
             )
         elif self.args.score_mode == "paper_nonoverlap":
-            test_energy, test_labels = self._paper_nonoverlap_scores(
+            test_energy, test_labels, score_indices = self._paper_nonoverlap_scores(
                 test_data.test,
                 test_data.test_mark,
                 test_data.test_labels,
             )
-            score_indices = np.arange(len(test_energy), dtype=int)
         else:
             test_energy, covered = self._point_scores(
                 test_data.test, test_data.test_mark, test_data.test_windows
@@ -525,6 +622,22 @@ class Exp_Anomaly_Detection(Exp_Basic):
         roc_auc = roc_auc_score(gt, test_energy)
         pr_auc = average_precision_score(gt, test_energy)
         event_hits, event_total = self._event_hits(gt, raw_pred, score_segments)
+        raw_type_rows = self._metrics_by_anomaly_type(
+            gt, raw_pred, test_data.test_meta, score_indices
+        )
+        adjusted_type_rows = self._metrics_by_anomaly_type(
+            adjusted_gt, adjusted_pred, test_data.test_meta, score_indices
+        )
+        if raw_type_rows:
+            pd.DataFrame(raw_type_rows).to_csv(
+                os.path.join(res_path, "raw_metrics_by_anomaly_type.csv"),
+                index=False,
+            )
+        if adjusted_type_rows:
+            pd.DataFrame(adjusted_type_rows).to_csv(
+                os.path.join(res_path, "adjusted_metrics_by_anomaly_type.csv"),
+                index=False,
+            )
 
         raw_line = (
             "Raw      Accuracy : {:0.4f}, Precision : {:0.4f}, "
@@ -549,6 +662,14 @@ class Exp_Anomaly_Detection(Exp_Basic):
         print(adjusted_line)
         print("Point-adjusted confusion matrix:", adjusted[4].tolist())
         print("Note: point-adjusted metrics use ground-truth segment boundaries.")
+        for line in self._format_anomaly_type_table(
+            "Raw metrics by anomaly type", raw_type_rows
+        ):
+            print(line)
+        for line in self._format_anomaly_type_table(
+            "Point-adjusted metrics by anomaly type", adjusted_type_rows
+        ):
+            print(line)
 
         with open("result_anomaly_detection.txt", "a") as f:
             f.write(setting + " [score_mode=" + self.args.score_mode + "]\n")
@@ -562,4 +683,12 @@ class Exp_Anomaly_Detection(Exp_Basic):
                 + str(adjusted[4].tolist())
                 + "\n"
             )
+            for line in self._format_anomaly_type_table(
+                "Raw metrics by anomaly type", raw_type_rows
+            ):
+                f.write(line + "\n")
+            for line in self._format_anomaly_type_table(
+                "Point-adjusted metrics by anomaly type", adjusted_type_rows
+            ):
+                f.write(line + "\n")
             f.write("\n")
