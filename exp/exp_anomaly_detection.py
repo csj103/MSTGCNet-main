@@ -53,15 +53,89 @@ class Exp_Anomaly_Detection(Exp_Basic):
     def _reconstruction_loss(outputs, targets):
         return (outputs - targets).pow(2).flatten(start_dim=1).sum(dim=1).mean()
 
+    @classmethod
+    def _model_loss_from_output(cls, model_output, targets, args):
+        if not isinstance(model_output, dict):
+            reconstruction, aux_loss = model_output
+            loss = cls._reconstruction_loss(reconstruction, targets) + aux_loss
+            return loss, {
+                "reconstruction_loss": float(
+                    cls._reconstruction_loss(reconstruction, targets).detach().cpu()
+                ),
+                "nll_loss": 0.0,
+                "dynamic_loss": 0.0,
+                "last_loss": 0.0,
+                "balance_loss": float(aux_loss.detach().cpu()),
+            }
+
+        if "observation_score" in model_output:
+            observation_score = model_output["observation_score"]
+            nll_loss = observation_score.flatten(start_dim=1).sum(dim=1).mean()
+            last_loss = observation_score[:, -1, :].sum(dim=-1).mean()
+        else:
+            reconstruction = model_output["reconstruction"]
+            nll_loss = cls._reconstruction_loss(reconstruction, targets)
+            last_loss = (reconstruction[:, -1, :] - targets[:, -1, :]).pow(2).sum(
+                dim=-1
+            ).mean()
+
+        dynamic_score = model_output.get("dynamic_score")
+        if dynamic_score is None:
+            dynamic_loss = torch.zeros((), dtype=targets.dtype, device=targets.device)
+        else:
+            dynamic_loss = dynamic_score.mean()
+        balance_loss = model_output.get(
+            "balance_loss",
+            torch.zeros((), dtype=targets.dtype, device=targets.device),
+        )
+
+        loss = (
+            nll_loss
+            + getattr(args, "dynamic_loss_weight", 0.0) * dynamic_loss
+            + getattr(args, "last_loss_weight", 0.0) * last_loss
+            + getattr(args, "balance_loss_weight", getattr(args, "loss_coef", 0.0))
+            * balance_loss
+        )
+        return loss, {
+            "reconstruction_loss": float(nll_loss.detach().cpu()),
+            "nll_loss": float(nll_loss.detach().cpu()),
+            "dynamic_loss": float(dynamic_loss.detach().cpu()),
+            "last_loss": float(last_loss.detach().cpu()),
+            "balance_loss": float(balance_loss.detach().cpu()),
+        }
+
     def _select_criterion(self):
         return self._reconstruction_loss
 
     def _forward_model(self, batch_x, batch_m):
+        if self.args.model == "DTSGAD":
+            return self.model(batch_x, batch_m, return_dict=True)
         if self.args.model == "MSTGCNet":
-            return self.model(batch_x, batch_m)
+            outputs, balance_loss = self.model(batch_x, batch_m)
+            return {
+                "reconstruction": outputs,
+                "balance_loss": balance_loss,
+            }
         outputs = self.model(batch_x, batch_m, None, None)
-        balance_loss = torch.zeros((), device=batch_x.device)
-        return outputs, balance_loss
+        return {
+            "reconstruction": outputs,
+            "balance_loss": torch.zeros((), device=batch_x.device),
+        }
+
+    @staticmethod
+    def _reconstruction_from_output(model_output):
+        if isinstance(model_output, dict):
+            return model_output["reconstruction"]
+        return model_output[0]
+
+    @staticmethod
+    def _full_scores_from_output(model_output, batch_x):
+        if isinstance(model_output, dict) and "total_score" in model_output:
+            return model_output["total_score"]
+        reconstruction = Exp_Anomaly_Detection._reconstruction_from_output(
+            model_output
+        )
+        return torch.mean((batch_x - reconstruction) ** 2, dim=-1)
 
     def vali(self, vali_data, vali_loader, criterion):
         losses = []
@@ -70,8 +144,11 @@ class Exp_Anomaly_Detection(Exp_Basic):
             for batch_x, _, batch_m in vali_loader:
                 batch_x = batch_x.float().to(self.device)
                 batch_m = batch_m.float().to(self.device)
-                outputs, _ = self._forward_model(batch_x, batch_m)
-                losses.append(criterion(outputs, batch_x).item())
+                model_output = self._forward_model(batch_x, batch_m)
+                loss, _ = self._model_loss_from_output(
+                    model_output, batch_x, self.args
+                )
+                losses.append(loss.item())
         self.model.train()
         return float(np.average(losses)) if losses else 0.0
 
@@ -113,11 +190,12 @@ class Exp_Anomaly_Detection(Exp_Basic):
                 if isinstance(self.model, nn.DataParallel)
                 else self.model
             )
+            blocks_for_stats = getattr(model_for_stats, "blocks", [])
             routing_loads = [
                 np.zeros(block.num_experts, dtype=np.float64)
-                for block in model_for_stats.blocks
+                for block in blocks_for_stats
             ]
-            routing_entropy = np.zeros(len(model_for_stats.blocks), dtype=np.float64)
+            routing_entropy = np.zeros(len(blocks_for_stats), dtype=np.float64)
             routing_samples = 0
             self.model.train()
             epoch_time = time.time()
@@ -128,14 +206,15 @@ class Exp_Anomaly_Detection(Exp_Basic):
                 batch_x = batch_x.float().to(self.device)
                 batch_m = batch_m.float().to(self.device)
 
-                outputs, balance_loss = self._forward_model(batch_x, batch_m)
-                reconstruction_loss = criterion(outputs, batch_x)
-                loss = reconstruction_loss + balance_loss
+                model_output = self._forward_model(batch_x, batch_m)
+                loss, loss_parts = self._model_loss_from_output(
+                    model_output, batch_x, self.args
+                )
                 train_loss.append(loss.item())
-                reconstruction_losses.append(reconstruction_loss.item())
-                balance_losses.append(balance_loss.item())
+                reconstruction_losses.append(loss_parts["reconstruction_loss"])
+                balance_losses.append(loss_parts["balance_loss"])
                 routing_samples += batch_x.size(0)
-                for block_idx, block in enumerate(model_for_stats.blocks):
+                for block_idx, block in enumerate(blocks_for_stats):
                     router = block.router
                     if router.last_expert_load is not None:
                         routing_loads[block_idx] += (
@@ -234,8 +313,8 @@ class Exp_Anomaly_Detection(Exp_Basic):
                 )
                 batch_x = torch.from_numpy(batch_x).float().to(self.device)
                 batch_m = torch.from_numpy(batch_m).float().to(self.device)
-                outputs, _ = self._forward_model(batch_x, batch_m)
-                scores = torch.mean((batch_x - outputs) ** 2, dim=-1)
+                model_output = self._forward_model(batch_x, batch_m)
+                scores = self._full_scores_from_output(model_output, batch_x)
                 scores = scores.detach().cpu().numpy()
 
                 for start, score in zip(starts, scores):
@@ -265,7 +344,8 @@ class Exp_Anomaly_Detection(Exp_Basic):
                         [marks[start:start + self.args.seq_len] for start in starts]
                     )
                 ).float().to(self.device)
-                outputs, _ = self._forward_model(batch_x, batch_m)
+                model_output = self._forward_model(batch_x, batch_m)
+                outputs = self._reconstruction_from_output(model_output)
                 errors = (batch_x[:, -1, :] - outputs[:, -1, :]).pow(2)
                 error_sum += errors.sum(dim=0).cpu().numpy()
                 count += errors.size(0)
@@ -298,14 +378,22 @@ class Exp_Anomaly_Detection(Exp_Basic):
                 )
                 batch_x = torch.from_numpy(batch_x).float().to(self.device)
                 batch_m = torch.from_numpy(batch_m).float().to(self.device)
-                outputs, _ = self._forward_model(batch_x, batch_m)
-                errors = (batch_x[:, -1, :] - outputs[:, -1, :]) ** 2
-                if feature_scale is not None:
-                    scale = torch.as_tensor(
-                        feature_scale, device=errors.device, dtype=errors.dtype
-                    )
-                    errors = errors / scale
-                scores = torch.mean(errors, dim=-1)
+                model_output = self._forward_model(batch_x, batch_m)
+                if (
+                    isinstance(model_output, dict)
+                    and "total_score" in model_output
+                    and feature_scale is None
+                ):
+                    scores = model_output["total_score"][:, -1]
+                else:
+                    outputs = self._reconstruction_from_output(model_output)
+                    errors = (batch_x[:, -1, :] - outputs[:, -1, :]) ** 2
+                    if feature_scale is not None:
+                        scale = torch.as_tensor(
+                            feature_scale, device=errors.device, dtype=errors.dtype
+                        )
+                        errors = errors / scale
+                    scores = torch.mean(errors, dim=-1)
                 energies.append(scores.detach().cpu().numpy())
                 point_indices.extend(
                     start + self.args.seq_len - 1 for start in starts
@@ -356,8 +444,8 @@ class Exp_Anomaly_Detection(Exp_Basic):
                 )
                 batch_x = torch.from_numpy(batch_x).float().to(self.device)
                 batch_m = torch.from_numpy(batch_m).float().to(self.device)
-                outputs, _ = self._forward_model(batch_x, batch_m)
-                scores = torch.mean((batch_x - outputs) ** 2, dim=-1)
+                model_output = self._forward_model(batch_x, batch_m)
+                scores = self._full_scores_from_output(model_output, batch_x)
                 energies.append(scores.detach().cpu().numpy())
                 targets.append(
                     np.stack(

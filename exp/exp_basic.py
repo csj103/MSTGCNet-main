@@ -1,6 +1,6 @@
 import os
 import torch
-from models import MSTGCNet
+from models import DTSGAD, MSTGCNet
 
 
 class Exp_Basic(object):
@@ -8,6 +8,7 @@ class Exp_Basic(object):
         self.args = args
         self.model_dict = {
             'MSTGCNet': MSTGCNet,
+            'DTSGAD': DTSGAD,
         }
         if args.model not in self.model_dict:
             raise ValueError(f"Unsupported model in this repository: {args.model}")

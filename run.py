@@ -35,7 +35,12 @@ def build_parser():
     parser.add_argument("--task_name", type=str, default="anomaly_detection")
     parser.add_argument("--is_training", type=int, default=1)
     parser.add_argument("--model_id", type=str, default="ALFA10vars")
-    parser.add_argument("--model", type=str, default="MSTGCNet")
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="MSTGCNet",
+        choices=["MSTGCNet", "DTSGAD"],
+    )
 
     parser.add_argument("--data", type=str, default="ALFA", choices=["ALFA", "FD"])
     parser.add_argument("--root_path", type=str, default="./dataset/ALFA10vars/")
@@ -130,6 +135,25 @@ def build_parser():
     parser.add_argument("--residual_connection", type=int, default=1)
     parser.add_argument("--batch_norm", type=int, default=0)
     parser.add_argument("--lambda_contrastive", type=float, default=0.0)
+    parser.add_argument("--latent_dim", type=int, default=64)
+    parser.add_argument("--obs_topk", type=int, default=3)
+    parser.add_argument(
+        "--score_fusion",
+        type=str,
+        default="dual",
+        choices=["dual", "obs", "dyn"],
+        help="DTSGAD score fusion: observation only, dynamic only, or both.",
+    )
+    parser.add_argument("--dynamic_score_weight", type=float, default=0.05)
+    parser.add_argument("--dynamic_loss_weight", type=float, default=0.01)
+    parser.add_argument("--last_loss_weight", type=float, default=0.2)
+    parser.add_argument("--balance_loss_weight", type=float, default=1e-2)
+    parser.add_argument("--spectral_temperature", type=float, default=0.2)
+    parser.add_argument("--disable_spectral", type=str2bool, default=False)
+    parser.add_argument("--disable_dynamic_score", type=str2bool, default=False)
+    parser.add_argument("--disable_graph", type=str2bool, default=False)
+    parser.add_argument("--disable_router", type=str2bool, default=False)
+    parser.add_argument("--disable_probabilistic", type=str2bool, default=False)
 
     parser.add_argument("--num_kernels", type=int, default=6)
     parser.add_argument("--moving_avg", type=int, default=25)
@@ -238,6 +262,9 @@ def normalize_args(args):
         args.abl_thre = 1
     else:
         args.abl_thre = 0
+
+    if args.model != "MSTGCNet":
+        args.paper_strict = False
 
     if args.paper_strict:
         validate_paper_args(args)
