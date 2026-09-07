@@ -58,7 +58,16 @@ def build_parser():
         "--threshold_method",
         type=str,
         default="atssd",
-        choices=["percentile", "atssd", "causal_atssd"],
+        choices=[
+            "percentile",
+            "atssd",
+            "causal_atssd",
+            "oracle",
+            "val_quantile",
+            "lagged_atssd",
+            "freeze_atssd",
+            "median_mad",
+        ],
     )
     parser.add_argument(
         "--score_mode",
@@ -78,6 +87,15 @@ def build_parser():
         type=str,
         default="none",
         choices=["none", "train_feature"],
+    )
+    parser.add_argument(
+        "--save_train_feature_scale",
+        type=str2bool,
+        default=False,
+        help=(
+            "Save per-feature normal training errors for post-hoc score "
+            "diagnostics without changing the scoring mode."
+        ),
     )
 
     parser.add_argument("--enc_in", type=int, default=10)
@@ -130,12 +148,40 @@ def build_parser():
     parser.add_argument("--alarm_confirmation", type=int, default=1)
     parser.add_argument("--latch_alarm", type=int, choices=[0, 1], default=0)
     parser.add_argument("--threshold_adaptation_clip", type=float, default=2.0)
+    parser.add_argument("--val_quantile", type=float, default=0.995)
+    parser.add_argument(
+        "--val_quantiles",
+        nargs="+",
+        type=float,
+        default=[0.95, 0.975, 0.99, 0.995, 0.999],
+    )
+    parser.add_argument("--mad_k", type=float, default=5.0)
+    parser.add_argument(
+        "--mad_ks",
+        nargs="+",
+        type=float,
+        default=[2.0, 3.0, 4.0, 5.0, 6.0, 8.0],
+    )
+    parser.add_argument("--threshold_diagnostics", type=str2bool, default=True)
     parser.add_argument("--abl_GCN", type=int, default=0)
     parser.add_argument("--abl_thre", type=int, default=1)
     parser.add_argument("--residual_connection", type=int, default=1)
     parser.add_argument("--batch_norm", type=int, default=0)
     parser.add_argument("--lambda_contrastive", type=float, default=0.0)
     parser.add_argument("--latent_dim", type=int, default=64)
+    parser.add_argument(
+        "--dtsgad_objective",
+        type=str,
+        default="reconstruction",
+        choices=["reconstruction", "next_step_prediction"],
+        help="DTSGAD training objective.",
+    )
+    parser.add_argument(
+        "--target_horizon",
+        type=int,
+        default=1,
+        help="Prediction horizon for --dtsgad_objective next_step_prediction.",
+    )
     parser.add_argument("--obs_topk", type=int, default=3)
     parser.add_argument(
         "--score_fusion",
@@ -148,12 +194,59 @@ def build_parser():
     parser.add_argument("--dynamic_loss_weight", type=float, default=0.01)
     parser.add_argument("--last_loss_weight", type=float, default=0.2)
     parser.add_argument("--balance_loss_weight", type=float, default=1e-2)
+    parser.add_argument(
+        "--mask_ratio",
+        type=float,
+        default=0.0,
+        help="Random channel mask ratio for DTSGAD masked reconstruction training.",
+    )
+    parser.add_argument(
+        "--mask_eval_mode",
+        type=str,
+        default="none",
+        choices=["none", "channelwise"],
+        help="DTSGAD masked reconstruction scoring mode.",
+    )
     parser.add_argument("--spectral_temperature", type=float, default=0.2)
     parser.add_argument("--disable_spectral", type=str2bool, default=False)
     parser.add_argument("--disable_dynamic_score", type=str2bool, default=False)
+    parser.add_argument(
+        "--graph_mode",
+        type=str,
+        default="learned",
+        choices=["learned", "identity", "off"],
+        help="DTSGAD graph ablation mode.",
+    )
+    parser.add_argument(
+        "--graph_residual_mode",
+        type=str,
+        default="shared",
+        choices=["shared", "expert", "mixed"],
+        help=(
+            "DTSGAD graph residual source: shared block input, expert pre-graph "
+            "state, or alpha-mixed shared/expert state."
+        ),
+    )
+    parser.add_argument(
+        "--graph_residual_alpha",
+        type=float,
+        default=1.0,
+        help="Shared-state weight for --graph_residual_mode mixed.",
+    )
     parser.add_argument("--disable_graph", type=str2bool, default=False)
     parser.add_argument("--disable_router", type=str2bool, default=False)
     parser.add_argument("--disable_probabilistic", type=str2bool, default=False)
+    parser.add_argument("--router_diagnostics", type=str2bool, default=False)
+    parser.add_argument("--single_expert_diagnostics", type=str2bool, default=True)
+    parser.add_argument(
+        "--latent_diagnostics",
+        type=str2bool,
+        default=False,
+        help=(
+            "Run post-hoc normal-center latent diagnostics during testing. "
+            "This does not affect training or thresholding."
+        ),
+    )
 
     parser.add_argument("--num_kernels", type=int, default=6)
     parser.add_argument("--moving_avg", type=int, default=25)
@@ -266,6 +359,31 @@ def normalize_args(args):
     if args.model != "MSTGCNet":
         args.paper_strict = False
 
+    if bool(getattr(args, "disable_graph", False)) and args.graph_mode == "learned":
+        args.graph_mode = "identity"
+
+    if not 0.0 <= float(args.graph_residual_alpha) <= 1.0:
+        raise ValueError("--graph_residual_alpha must be in [0, 1]")
+    if not 0.0 <= float(args.mask_ratio) < 1.0:
+        raise ValueError("--mask_ratio must be in [0, 1)")
+    if args.mask_ratio <= 0.0:
+        args.mask_eval_mode = "none"
+    if int(args.target_horizon) < 1:
+        raise ValueError("--target_horizon must be >= 1")
+    if args.dtsgad_objective == "next_step_prediction":
+        if args.score_mode != "causal_last":
+            raise ValueError(
+                "next_step_prediction currently supports only causal_last scoring"
+            )
+        if args.mask_ratio > 0.0:
+            raise ValueError("M2 next_step_prediction must not be mixed with M1 masking")
+        args.disable_probabilistic = True
+        args.disable_dynamic_score = True
+        args.score_fusion = "obs"
+        args.dynamic_loss_weight = 0.0
+        args.last_loss_weight = 0.0
+        args.balance_loss_weight = 0.0
+
     if args.paper_strict:
         validate_paper_args(args)
 
@@ -282,15 +400,34 @@ def build_setting(args, iteration):
         "gpu_type",
         "is_training",
         "itr",
+        "latent_diagnostics",
         "num_workers",
+        "mad_ks",
+        "router_diagnostics",
+        "single_expert_diagnostics",
+        "save_train_feature_scale",
+        "threshold_diagnostics",
         "use_gpu",
         "use_multi_gpu",
+        "val_quantiles",
     }
     fingerprint_payload = {
         key: value
         for key, value in vars(args).items()
         if key not in excluded
     }
+    if fingerprint_payload.get("graph_mode") == "learned":
+        fingerprint_payload.pop("graph_mode")
+    if fingerprint_payload.get("graph_residual_mode") == "shared":
+        fingerprint_payload.pop("graph_residual_mode")
+    if fingerprint_payload.get("graph_residual_mode") != "mixed":
+        fingerprint_payload.pop("graph_residual_alpha", None)
+    if float(fingerprint_payload.get("mask_ratio", 0.0)) <= 0.0:
+        fingerprint_payload.pop("mask_ratio", None)
+        fingerprint_payload.pop("mask_eval_mode", None)
+    if fingerprint_payload.get("dtsgad_objective") == "reconstruction":
+        fingerprint_payload.pop("dtsgad_objective", None)
+        fingerprint_payload.pop("target_horizon", None)
     serialized = json.dumps(
         fingerprint_payload,
         sort_keys=True,

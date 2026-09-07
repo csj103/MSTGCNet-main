@@ -1,0 +1,7 @@
+source_file,fault_type,fine_anomaly_type,segment_id,time_sec,label
+normal.csv,normal,normal,0,0.0,0
+normal.csv,normal,normal,0,1.0,0
+carbonZ_2018-09-11-14-22-07_2_engine_failure.csv,engine,Engine full power loss,1,2.0,1
+carbonZ_2018-09-11-14-22-07_2_engine_failure.csv,engine,Engine full power loss,1,3.0,1
+carbonZ_2018-09-11-15-06-34_1_rudder_right_failure.csv,rudder,Rudder stuck to right,2,4.0,0
+carbonZ_2018-09-11-15-06-34_1_rudder_right_failure.csv,rudder,Rudder stuck to right,2,5.0,1

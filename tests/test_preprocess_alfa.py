@@ -121,3 +121,65 @@ def test_fine_grained_loader_uses_explicit_validation_split(tmp_path):
 
     assert len(dataset.val) == 2
     assert len(dataset) == 1
+
+
+def test_alfa_next_step_prediction_windows_exclude_target_point(tmp_path):
+    columns = ["time_sec", "f1", "f2", "label"]
+    pd.DataFrame(
+        [
+            [0.0, 0.0, 10.0, 0],
+            [1.0, 1.0, 11.0, 0],
+            [2.0, 2.0, 12.0, 0],
+            [3.0, 3.0, 13.0, 0],
+            [4.0, 4.0, 14.0, 0],
+            [5.0, 5.0, 15.0, 0],
+        ],
+        columns=columns,
+    ).to_csv(tmp_path / "train.csv", index=False)
+    pd.DataFrame(
+        [
+            [10.0, 10.0, 20.0, 0],
+            [11.0, 11.0, 21.0, 0],
+            [12.0, 12.0, 22.0, 0],
+            [13.0, 13.0, 23.0, 0],
+        ],
+        columns=columns,
+    ).to_csv(tmp_path / "val.csv", index=False)
+    pd.DataFrame(
+        [
+            [20.0, 20.0, 30.0, 0],
+            [21.0, 21.0, 31.0, 0],
+            [22.0, 22.0, 32.0, 0],
+            [23.0, 23.0, 33.0, 1],
+            [24.0, 24.0, 34.0, 1],
+        ],
+        columns=columns,
+    ).to_csv(tmp_path / "test.csv", index=False)
+    pd.DataFrame({"segment_id": [0, 0, 0, 0, 0, 0]}).to_csv(
+        tmp_path / "train_meta.csv", index=False
+    )
+    pd.DataFrame({"segment_id": [1, 1, 1, 1]}).to_csv(
+        tmp_path / "val_meta.csv", index=False
+    )
+    pd.DataFrame({"segment_id": [2, 2, 2, 2, 2]}).to_csv(
+        tmp_path / "test_meta.csv", index=False
+    )
+    (tmp_path / "metadata.json").write_text(
+        '{"split_policy": "fine_grained"}',
+        encoding="utf-8",
+    )
+    args = type(
+        "Args",
+        (),
+        {"dtsgad_objective": "next_step_prediction", "target_horizon": 1},
+    )()
+
+    dataset = Dataset_ALFA(args, str(tmp_path), win_size=3, flag="train")
+    input_window, target_point, marks = dataset[0]
+
+    assert len(dataset) == 3
+    assert input_window.shape == (3, 2)
+    assert target_point.shape == (2,)
+    assert marks.tolist() == [0.0, 1.0, 2.0]
+    assert np.allclose(input_window, dataset.train[0:3])
+    assert np.allclose(target_point, dataset.train[3])

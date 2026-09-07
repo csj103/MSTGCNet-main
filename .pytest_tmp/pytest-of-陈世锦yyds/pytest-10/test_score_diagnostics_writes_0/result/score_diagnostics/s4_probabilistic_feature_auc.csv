@@ -1,0 +1,9 @@
+score_name,feature,ROC-AUC,PR-AUC
+S_MSE,a,1.0,1.0
+S_MSE,b,1.0,1.0
+S_stdres,a,1.0,1.0
+S_stdres,b,1.0,1.0
+S_unc_logvar,a,1.0,1.0
+S_unc_logvar,b,1.0,1.0
+S_NLL,a,1.0,1.0
+S_NLL,b,1.0,1.0

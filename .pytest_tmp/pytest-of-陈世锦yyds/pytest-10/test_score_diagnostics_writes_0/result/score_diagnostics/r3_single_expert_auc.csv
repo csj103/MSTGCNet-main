@@ -1,0 +1,7 @@
+expert,patch_path,score_name,ROC-AUC,PR-AUC
+1,8-4,single_expert_MSE,1.0,1.0
+2,16-8,single_expert_MSE,1.0,1.0
+3,32-16,single_expert_MSE,1.0,1.0
+1,8-4,single_expert_NLL,1.0,1.0
+2,16-8,single_expert_NLL,1.0,1.0
+3,32-16,single_expert_NLL,1.0,1.0

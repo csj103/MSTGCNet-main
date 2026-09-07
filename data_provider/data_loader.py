@@ -46,6 +46,11 @@ class Dataset_ALFA(Dataset):
         self.flag = flag
         self.step = step
         self.win_size = win_size
+        self.prediction_horizon = int(getattr(args, "target_horizon", 1))
+        self.next_step_prediction = (
+            getattr(args, "dtsgad_objective", "reconstruction")
+            == "next_step_prediction"
+        )
         self.scaler = StandardScaler()
 
         train_data = pd.read_csv(os.path.join(root_path, "train.csv"))
@@ -119,17 +124,20 @@ class Dataset_ALFA(Dataset):
         self.test_labels = self.test_labels.astype(np.float32)
 
         self.test_meta = test_meta.reset_index(drop=True) if test_meta is not None else None
+        required_size = self.win_size
+        if self.next_step_prediction:
+            required_size += self.prediction_horizon
         self.train_windows = build_window_index(
-            self.train_meta, len(self.train), self.win_size, self.step
+            self.train_meta, len(self.train), required_size, self.step
         )
         self.val_windows = build_window_index(
-            self.val_meta, len(self.val), self.win_size, self.step
+            self.val_meta, len(self.val), required_size, self.step
         )
         self.test_windows = build_window_index(
-            self.test_meta, len(self.test), self.win_size, self.step
+            self.test_meta, len(self.test), required_size, self.step
         )
         self.thre_windows = build_window_index(
-            self.test_meta, len(self.test), self.win_size, self.win_size
+            self.test_meta, len(self.test), required_size, self.win_size
         )
 
         print("test:", self.test.shape)
@@ -167,6 +175,25 @@ class Dataset_ALFA(Dataset):
         else:
             start = self.test_windows[index]
         end = start + self.win_size
+        target_index = end + self.prediction_horizon - 1
+        if self.next_step_prediction:
+            if self.flag == "train":
+                return (
+                    np.float32(self.train[start:end]),
+                    np.float32(self.train[target_index]),
+                    np.float32(self.train_mark[start:end]),
+                )
+            if self.flag == "val":
+                return (
+                    np.float32(self.val[start:end]),
+                    np.float32(self.val[target_index]),
+                    np.float32(self.val_mark[start:end]),
+                )
+            return (
+                np.float32(self.test[start:end]),
+                np.float32(self.test_labels[target_index]),
+                np.float32(self.test_mark[start:end]),
+            )
         if self.flag == "train":
             labels = np.zeros(self.win_size, dtype=np.float32)
             return (

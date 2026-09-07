@@ -1,0 +1,6 @@
+Position,B1 cosine,B2 cosine
+input,0.5,0.5
+after_adjacency,0.6,0.6
+residual_base,1.0,1.0
+after_residual,0.9,0.9
+after_norm,0.9500000000000001,0.9500000000000001

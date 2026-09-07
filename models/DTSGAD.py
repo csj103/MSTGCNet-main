@@ -7,6 +7,15 @@ import torch.nn.functional as F
 from layers.RevIN import RevIN
 
 
+GRAPH_TRACE_POSITIONS = [
+    "input",
+    "after_adjacency",
+    "residual_base",
+    "after_residual",
+    "after_norm",
+]
+
+
 def cv_squared(values):
     if values.numel() <= 1:
         return torch.zeros((), dtype=values.dtype, device=values.device)
@@ -69,6 +78,9 @@ class TemporalVariableGraphExpert(nn.Module):
         knn_k,
         dropout,
         disable_graph=False,
+        graph_mode="learned",
+        graph_residual_mode="shared",
+        graph_residual_alpha=1.0,
     ):
         super().__init__()
         self.seq_len = seq_len
@@ -77,7 +89,18 @@ class TemporalVariableGraphExpert(nn.Module):
         self.patch_size = patch_size
         self.num_patches = math.ceil(seq_len / patch_size)
         self.knn_k = min(knn_k, max(num_vars - 1, 1))
-        self.disable_graph = disable_graph
+        if graph_mode not in {"learned", "identity", "off"}:
+            raise ValueError("graph_mode must be one of: learned, identity, off")
+        if disable_graph and graph_mode == "learned":
+            graph_mode = "identity"
+        if graph_residual_mode not in {"shared", "expert", "mixed"}:
+            raise ValueError(
+                "graph_residual_mode must be one of: shared, expert, mixed"
+            )
+        self.graph_mode = graph_mode
+        self.graph_residual_mode = graph_residual_mode
+        self.graph_residual_alpha = float(graph_residual_alpha)
+        self.disable_graph = graph_mode != "learned"
         heads = max(1, math.gcd(attn_heads, d_model))
         self.temporal_attn = nn.MultiheadAttention(
             embed_dim=d_model,
@@ -108,7 +131,7 @@ class TemporalVariableGraphExpert(nn.Module):
         return patches.mean(dim=3)
 
     def _adjacency(self):
-        if self.disable_graph:
+        if self.graph_mode in {"identity", "off"}:
             return torch.eye(
                 self.num_vars,
                 device=self.variable_embeddings.device,
@@ -127,24 +150,55 @@ class TemporalVariableGraphExpert(nn.Module):
         degree = adj.sum(dim=-1).clamp_min(1e-6)
         return degree.rsqrt().unsqueeze(1) * adj * degree.rsqrt().unsqueeze(0)
 
-    def forward(self, hidden):
+    def _expand_tokens(self, tokens, seq_len):
+        bsz, num_vars, _, d_model = tokens.shape
+        return (
+            tokens.unsqueeze(3)
+            .expand(bsz, num_vars, self.num_patches, self.patch_size, d_model)
+            .reshape(bsz, num_vars, self.num_patches * self.patch_size, d_model)
+            [:, :, :seq_len]
+            .permute(0, 2, 1, 3)
+            .contiguous()
+        )
+
+    def forward(self, hidden, collect_graph_states=False):
         bsz, seq_len, num_vars, d_model = hidden.shape
+        residual_base = hidden
         tokens = self._patch_tokens(hidden)
         attn_in = tokens.reshape(bsz * num_vars, self.num_patches, d_model)
         attn_out, _ = self.temporal_attn(attn_in, attn_in, attn_in)
         tokens = attn_out.reshape(bsz, num_vars, self.num_patches, d_model)
+        pre_graph_hidden = self._expand_tokens(tokens, seq_len)
         adj = self._adjacency()
-        graph_tokens = torch.einsum("ij,bjpd->bipd", adj, tokens)
-        expanded = (
-            graph_tokens.unsqueeze(3)
-            .expand(bsz, num_vars, self.num_patches, self.patch_size, d_model)
-            .reshape(bsz, num_vars, self.num_patches * self.patch_size, d_model)
-           [:, :, :seq_len]
-            .permute(0, 2, 1, 3)
-            .contiguous()
-        )
-        hidden = self.norm_graph(hidden + self.dropout(expanded))
+        if self.graph_mode == "off":
+            expanded = pre_graph_hidden
+            after_residual = pre_graph_hidden
+            hidden = pre_graph_hidden
+        else:
+            graph_tokens = torch.einsum("ij,bjpd->bipd", adj, tokens)
+            expanded = self._expand_tokens(graph_tokens, seq_len)
+            if self.graph_residual_mode == "expert":
+                residual_source = pre_graph_hidden
+            elif self.graph_residual_mode == "mixed":
+                residual_source = (
+                    self.graph_residual_alpha * residual_base
+                    + (1.0 - self.graph_residual_alpha) * pre_graph_hidden
+                )
+            else:
+                residual_source = residual_base
+            after_residual = residual_source + self.dropout(expanded)
+            hidden = self.norm_graph(after_residual)
+        post_graph_hidden = hidden
         hidden = self.norm_ffn(hidden + self.dropout(self.ffn(hidden)))
+        if collect_graph_states:
+            graph_trace = {
+                "input": pre_graph_hidden,
+                "after_adjacency": expanded,
+                "residual_base": residual_base,
+                "after_residual": after_residual,
+                "after_norm": post_graph_hidden,
+            }
+            return hidden, adj, pre_graph_hidden, post_graph_hidden, graph_trace
         return hidden, adj
 
 
@@ -217,6 +271,9 @@ class AdaptiveMultiScaleBlock(nn.Module):
         dropout,
         noisy_gating,
         disable_graph=False,
+        graph_mode="learned",
+        graph_residual_mode="shared",
+        graph_residual_alpha=1.0,
         disable_router=False,
     ):
         super().__init__()
@@ -241,25 +298,96 @@ class AdaptiveMultiScaleBlock(nn.Module):
                     knn_k=knn_k,
                     dropout=dropout,
                     disable_graph=disable_graph,
+                    graph_mode=graph_mode,
+                    graph_residual_mode=graph_residual_mode,
+                    graph_residual_alpha=graph_residual_alpha,
                 )
                 for patch_size in patch_sizes
             ]
         )
         self.output_norm = nn.LayerNorm(d_model)
 
-    def forward(self, hidden):
+    @staticmethod
+    def _pairwise_expert_cosine(expert_outputs):
+        flattened = [
+            output[:, -1].reshape(output.size(0), -1)
+            for output in expert_outputs
+        ]
+        pairs = []
+        for left in range(len(flattened)):
+            for right in range(left + 1, len(flattened)):
+                pairs.append(
+                    F.cosine_similarity(
+                        flattened[left],
+                        flattened[right],
+                        dim=-1,
+                    )
+                )
+        if pairs:
+            return torch.stack(pairs, dim=1)
+        return expert_outputs[0].new_zeros(expert_outputs[0].size(0), 0)
+
+    def forward(self, hidden, force_expert_index=None, collect_diagnostics=False):
         gates, load = self.router(hidden)
         expert_outputs = []
+        pre_graph_outputs = []
+        post_graph_outputs = []
+        graph_trace_outputs = {
+            position: []
+            for position in GRAPH_TRACE_POSITIONS
+        }
         adjacencies = []
         for expert in self.experts:
-            expert_output, adj = expert(hidden)
+            if collect_diagnostics:
+                expert_output, adj, pre_graph, post_graph, graph_trace = expert(
+                    hidden,
+                    collect_graph_states=True,
+                )
+                pre_graph_outputs.append(pre_graph)
+                post_graph_outputs.append(post_graph)
+                for position in GRAPH_TRACE_POSITIONS:
+                    graph_trace_outputs[position].append(graph_trace[position])
+            else:
+                expert_output, adj = expert(hidden)
             expert_outputs.append(expert_output)
             adjacencies.append(adj)
+        if force_expert_index is not None:
+            expert_index = int(force_expert_index)
+            if expert_index < 0 or expert_index >= self.num_experts:
+                raise IndexError("force_expert_index is outside the expert range")
+            gates = torch.zeros_like(gates)
+            gates[:, expert_index] = 1.0
+            load = torch.zeros_like(load)
+            load[expert_index] = hidden.size(0)
         stacked = torch.stack(expert_outputs, dim=1)
         mixed = (stacked * gates.view(gates.size(0), -1, 1, 1, 1)).sum(dim=1)
         importance = gates.sum(dim=0)
         balance_loss = cv_squared(importance) + cv_squared(load)
-        return self.output_norm(hidden + mixed), balance_loss, adjacencies
+        diagnostics = None
+        if collect_diagnostics:
+            graph_trace_pair_cosine = torch.stack(
+                [
+                    self._pairwise_expert_cosine(graph_trace_outputs[position])
+                    for position in GRAPH_TRACE_POSITIONS
+                ],
+                dim=1,
+            )
+            diagnostics = {
+                "gates": gates.detach(),
+                "expert_pair_cosine": self._pairwise_expert_cosine(
+                    expert_outputs
+                ).detach(),
+                "expert_pre_graph_pair_cosine": self._pairwise_expert_cosine(
+                    pre_graph_outputs
+                ).detach(),
+                "expert_post_graph_pair_cosine": self._pairwise_expert_cosine(
+                    post_graph_outputs
+                ).detach(),
+                "graph_trace_positions": list(GRAPH_TRACE_POSITIONS),
+                "graph_trace_pair_cosine": graph_trace_pair_cosine.detach(),
+                "adjacency": torch.stack(adjacencies, dim=0).detach(),
+            }
+        return self.output_norm(hidden + mixed), balance_loss, adjacencies, diagnostics
 
 
 class Model(nn.Module):
@@ -277,10 +405,14 @@ class Model(nn.Module):
         self.disable_probabilistic = bool(
             getattr(configs, "disable_probabilistic", False)
         )
+        self.objective = getattr(configs, "dtsgad_objective", "reconstruction")
         self.score_fusion = getattr(configs, "score_fusion", "dual")
         self.obs_topk = max(1, min(getattr(configs, "obs_topk", 3), configs.enc_in))
         self.dynamic_score_weight = getattr(configs, "dynamic_score_weight", 1.0)
         self.loss_coef = getattr(configs, "loss_coef", 1e-2)
+        self.graph_mode = getattr(configs, "graph_mode", "learned")
+        self.graph_residual_mode = getattr(configs, "graph_residual_mode", "shared")
+        self.graph_residual_alpha = getattr(configs, "graph_residual_alpha", 1.0)
 
         self.spectral = SpectralEnergyEnhancer(
             temperature=getattr(configs, "spectral_temperature", 0.2)
@@ -309,6 +441,9 @@ class Model(nn.Module):
                     dropout=configs.dropout,
                     noisy_gating=configs.noisy_gating == 1,
                     disable_graph=bool(getattr(configs, "disable_graph", False)),
+                    graph_mode=self.graph_mode,
+                    graph_residual_mode=self.graph_residual_mode,
+                    graph_residual_alpha=self.graph_residual_alpha,
                     disable_router=bool(getattr(configs, "disable_router", False)),
                 )
                 for layer_idx in range(configs.e_layers)
@@ -353,21 +488,96 @@ class Model(nn.Module):
         dynamic_score = self._gaussian_kl(q_mu, q_logvar, p_mu, p_logvar)
         return dynamic_score, q_mu, q_logvar, p_mu, p_logvar
 
-    def forward(self, x_enc, x_mark=None, x_dec=None, x_mark_dec=None, return_dict=False):
+    def forward(
+        self,
+        x_enc,
+        x_mark=None,
+        x_dec=None,
+        x_mark_dec=None,
+        return_dict=False,
+        collect_diagnostics=False,
+        force_expert_index=None,
+        input_mask=None,
+        target_next=None,
+    ):
         if self.revin:
             target = self.revin_layer(x_enc, "norm")
         else:
             target = x_enc
 
-        spectral = None if self.disable_spectral else self.spectral(target)
-        hidden = self.embedding(target, spectral=spectral)
+        model_input = target
+        if input_mask is not None:
+            model_input = target * input_mask.to(device=target.device, dtype=target.dtype)
+
+        spectral = None if self.disable_spectral else self.spectral(model_input)
+        hidden = self.embedding(model_input, spectral=spectral)
 
         balance_loss = torch.zeros((), dtype=x_enc.dtype, device=x_enc.device)
         adjacencies = []
+        router_diagnostics = []
         for block in self.blocks:
-            hidden, aux_loss, block_adjacencies = block(hidden)
+            hidden, aux_loss, block_adjacencies, block_diagnostics = block(
+                hidden,
+                force_expert_index=force_expert_index,
+                collect_diagnostics=collect_diagnostics,
+            )
             balance_loss = balance_loss + aux_loss
             adjacencies.append(block_adjacencies)
+            if collect_diagnostics:
+                router_diagnostics.append(block_diagnostics)
+
+        if self.objective == "next_step_prediction":
+            prediction_norm = self.reconstruction_mu(hidden[:, -1]).squeeze(-1)
+            prediction = (
+                self.revin_layer._denormalize(prediction_norm.unsqueeze(1)).squeeze(1)
+                if self.revin
+                else prediction_norm
+            )
+            dynamic_score = torch.zeros(
+                prediction_norm.size(0),
+                1,
+                dtype=prediction_norm.dtype,
+                device=prediction_norm.device,
+            )
+            outputs = {
+                "prediction": prediction,
+                "prediction_norm": prediction_norm,
+                "reconstruction": prediction,
+                "reconstruction_norm": prediction_norm,
+                "dynamic_score": dynamic_score,
+                "balance_loss": balance_loss,
+                "adjacencies": adjacencies,
+                "router_diagnostics": router_diagnostics,
+            }
+            if target_next is not None:
+                target_next = target_next.to(
+                    device=prediction_norm.device,
+                    dtype=prediction_norm.dtype,
+                )
+                if self.revin:
+                    target_next_norm = self.revin_layer._normalize(
+                        target_next.unsqueeze(1)
+                    ).squeeze(1)
+                else:
+                    target_next_norm = target_next
+                prediction_score = (target_next_norm - prediction_norm).pow(2)
+                channel_score = torch.topk(
+                    prediction_score,
+                    k=self.obs_topk,
+                    dim=-1,
+                ).values.mean(dim=-1)
+                outputs.update(
+                    {
+                        "target_next_norm": target_next_norm,
+                        "target_norm": target_next_norm,
+                        "observation_score": prediction_score.unsqueeze(1),
+                        "prediction_score": prediction_score,
+                        "total_score": channel_score.unsqueeze(1),
+                    }
+                )
+            if return_dict:
+                return outputs
+            return prediction, self.loss_coef * balance_loss
 
         mu_norm = self.reconstruction_mu(hidden).squeeze(-1)
         logvar = self.reconstruction_logvar(hidden).squeeze(-1).clamp(min=-6.0, max=4.0)
@@ -402,6 +612,7 @@ class Model(nn.Module):
             "reconstruction_norm": mu_norm,
             "reconstruction_logvar": logvar,
             "target_norm": target,
+            "input_norm": model_input,
             "observation_score": observation_score,
             "dynamic_score": dynamic_score,
             "total_score": total_score,
@@ -411,6 +622,7 @@ class Model(nn.Module):
             "prior_mu": p_mu,
             "prior_logvar": p_logvar,
             "adjacencies": adjacencies,
+            "router_diagnostics": router_diagnostics,
         }
         if return_dict:
             return outputs

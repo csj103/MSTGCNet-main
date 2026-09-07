@@ -1,0 +1,4 @@
+score_name,ROC-AUC,PR-AUC
+S_obs_topk,1.0,1.0
+S_dyn,0.33333333333333337,0.5
+S_total,1.0,1.0
