@@ -74,11 +74,17 @@ def _optional_array(path):
 def load_saved_scores(result_dir):
     result_dir = Path(result_dir)
     component_dir = result_dir / "score_components"
-    scores = {
-        "S_obs_topk": _load_array(component_dir / "s_obs_topk.npy"),
-        "S_dyn": _load_array(component_dir / "s_dyn.npy"),
-        "S_total": _load_array(component_dir / "s_total.npy"),
-    }
+    if (component_dir / "s_total.npy").exists():
+        scores = {"S_total": _load_array(component_dir / "s_total.npy")}
+        if (component_dir / "s_obs_topk.npy").exists():
+            scores = {
+                "S_obs_topk": _load_array(component_dir / "s_obs_topk.npy"),
+                **scores,
+            }
+        if (component_dir / "s_dyn.npy").exists():
+            scores["S_dyn"] = _load_array(component_dir / "s_dyn.npy")
+    else:
+        scores = {"S_total": _load_array(result_dir / "test_energy.npy")}
     obs_feature_path = component_dir / "s_obs_feature.npy"
     obs_feature = _load_array(obs_feature_path) if obs_feature_path.exists() else None
     labels = _load_array(result_dir / "test_labels.npy").astype(int)
@@ -274,6 +280,61 @@ def score_auc_by_anomaly_type_table(scores, labels, aligned_meta):
                     "anomaly_points": int(masked_labels.sum()),
                 }
             )
+    return pd.DataFrame(rows)
+
+
+def event_phase_score_stats_table(scores, labels, aligned_meta):
+    if aligned_meta is None or "fine_anomaly_type" not in aligned_meta.columns:
+        return pd.DataFrame()
+    labels = np.asarray(labels).astype(int)
+    labels[labels != 0] = 1
+    rows = []
+    if "segment_id" in aligned_meta.columns:
+        segment_values = aligned_meta["segment_id"].to_numpy()
+        boundaries = np.flatnonzero(
+            np.r_[True, segment_values[1:] != segment_values[:-1], True]
+        )
+        spans = list(zip(boundaries[:-1], boundaries[1:]))
+    else:
+        spans = [(0, len(labels))]
+
+    for segment_start, segment_end in spans:
+        local = labels[segment_start:segment_end]
+        changes = np.diff(np.r_[0, local, 0])
+        starts = np.flatnonzero(changes == 1) + segment_start
+        ends = np.flatnonzero(changes == -1) + segment_start
+        for event_number, (start, end) in enumerate(zip(starts, ends), start=1):
+            fault_type = str(aligned_meta.iloc[start]["fine_anomaly_type"])
+            if fault_type == "normal":
+                continue
+            event_len = max(1, end - start)
+            pre_start = max(segment_start, start - event_len)
+            pre_indices = np.arange(pre_start, start)
+            pre_indices = pre_indices[labels[pre_indices] == 0]
+            phase_indices = {
+                "pre_normal": pre_indices,
+                "early": np.array_split(np.arange(start, end), 3)[0],
+                "middle": np.array_split(np.arange(start, end), 3)[1],
+                "late": np.array_split(np.arange(start, end), 3)[2],
+            }
+            segment_id = (
+                aligned_meta.iloc[start]["segment_id"]
+                if "segment_id" in aligned_meta.columns
+                else 0
+            )
+            for score_name, values in scores.items():
+                values = np.asarray(values, dtype=np.float64)
+                for phase, indices in phase_indices.items():
+                    rows.append(
+                        {
+                            "segment_id": segment_id,
+                            "event_number": event_number,
+                            "anomaly_type": fault_type,
+                            "score_name": score_name,
+                            "phase": phase,
+                            **_stats(values[indices]),
+                        }
+                    )
     return pd.DataFrame(rows)
 
 
@@ -936,8 +997,20 @@ def plot_fault_timeseries(scores, labels, threshold, aligned_meta, fault_types, 
 
         x = x_all[event_slice]
         fig, axis = plt.subplots(figsize=(12, 4.8))
-        axis.plot(x, scores["S_obs_topk"][event_slice], label="S_obs", linewidth=1.4)
-        axis.plot(x, scores["S_dyn"][event_slice], label="S_dyn", linewidth=1.2)
+        if "S_obs_topk" in scores:
+            axis.plot(
+                x,
+                scores["S_obs_topk"][event_slice],
+                label="S_obs",
+                linewidth=1.4,
+            )
+        if "S_dyn" in scores:
+            axis.plot(
+                x,
+                scores["S_dyn"][event_slice],
+                label="S_dyn",
+                linewidth=1.2,
+            )
         axis.plot(x, scores["S_total"][event_slice], label="S_total", linewidth=1.4)
         axis.plot(
             x,
@@ -1082,6 +1155,12 @@ def run_score_diagnostics(
         plot_score_auc_by_anomaly_type(
             type_auc_table,
             output_dir / "s1_score_auc_by_anomaly_type.png",
+        )
+    phase_table = event_phase_score_stats_table(scores, labels, aligned_meta)
+    if not phase_table.empty:
+        phase_table.to_csv(
+            output_dir / "a6_event_phase_score_stats.csv",
+            index=False,
         )
     obs_feature_auc_table(obs_feature, labels, feature_names).to_csv(
         output_dir / "s1_obs_feature_auc.csv",

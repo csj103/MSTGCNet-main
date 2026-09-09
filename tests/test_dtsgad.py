@@ -1,3 +1,5 @@
+import os
+
 import torch
 
 from exp.exp_anomaly_detection import Exp_Anomaly_Detection
@@ -83,6 +85,61 @@ def test_dtsgad_training_loss_backpropagates_through_probabilistic_heads():
     assert model.reconstruction_mu.weight.grad is not None
     assert model.reconstruction_logvar.weight.grad is not None
     assert model.posterior_mu.weight.grad is not None
+
+
+def test_loss_audit_reports_weighted_component_shares():
+    args = build_args(
+        [
+            "--dynamic_loss_weight",
+            "0.5",
+            "--last_loss_weight",
+            "2.0",
+            "--balance_loss_weight",
+            "0.1",
+        ]
+    )
+    parts = {
+        "nll_loss": 10.0,
+        "dynamic_loss": 4.0,
+        "last_loss": 3.0,
+        "balance_loss": 20.0,
+    }
+
+    audit = Exp_Anomaly_Detection._loss_audit_from_parts(parts, args)
+
+    assert audit["full_loss_raw"] == 10.0
+    assert audit["full_loss_weighted"] == 10.0
+    assert audit["last_loss_weighted"] == 6.0
+    assert audit["dynamic_loss_weighted"] == 2.0
+    assert audit["balance_loss_weighted"] == 2.0
+    assert audit["total_loss_recomputed"] == 20.0
+    assert audit["full_loss_share"] == 0.5
+    assert audit["last_loss_share"] == 0.3
+    assert audit["dynamic_loss_share"] == 0.1
+    assert audit["balance_loss_share"] == 0.1
+
+
+def test_checkpoint_setting_overrides_loaded_checkpoint_without_renaming_result():
+    args = build_args(
+        [
+            "--score_mode",
+            "overlap_mean",
+            "--implementation_tag",
+            "dtsgad_a2_overlap_score_v1",
+            "--checkpoint_setting",
+            "ALFA10vars_DTSGAD_sl96_dm64_el3_causal_last_atssd_dtsgad_a1_no_revin_v1_cfg33f0a20cdf_0",
+        ]
+    )
+    result_setting = build_setting(args, 0)
+    checkpoint_path = Exp_Anomaly_Detection._checkpoint_path(args, result_setting)
+
+    assert "overlap_mean" in result_setting
+    assert "causal_last" not in result_setting
+    assert checkpoint_path == os.path.join(
+        args.checkpoints,
+        "ALFA10vars_DTSGAD_sl96_dm64_el3_causal_last_atssd_dtsgad_a1_no_revin_v1_cfg33f0a20cdf_0",
+        "checkpoint.pth",
+    )
 
 
 def test_dtsgad_forward_masks_input_but_scores_original_target():

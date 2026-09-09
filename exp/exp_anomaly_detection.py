@@ -195,6 +195,70 @@ class Exp_Anomaly_Detection(Exp_Basic):
             "balance_loss": float(balance_loss.detach().cpu()),
         }
 
+    @staticmethod
+    def _loss_audit_from_parts(loss_parts, args):
+        full_raw = float(
+            loss_parts.get(
+                "nll_loss",
+                loss_parts.get("reconstruction_loss", 0.0),
+            )
+        )
+        if full_raw == 0.0 and "reconstruction_loss" in loss_parts:
+            full_raw = float(loss_parts["reconstruction_loss"])
+        dynamic_raw = float(loss_parts.get("dynamic_loss", 0.0))
+        last_raw = float(loss_parts.get("last_loss", 0.0))
+        balance_raw = float(loss_parts.get("balance_loss", 0.0))
+
+        full_weighted = full_raw
+        dynamic_weighted = float(getattr(args, "dynamic_loss_weight", 0.0)) * dynamic_raw
+        last_weighted = float(getattr(args, "last_loss_weight", 0.0)) * last_raw
+        balance_weighted = float(
+            getattr(args, "balance_loss_weight", getattr(args, "loss_coef", 0.0))
+        ) * balance_raw
+        total = full_weighted + dynamic_weighted + last_weighted + balance_weighted
+        denom = total if abs(total) > 1e-12 else float("nan")
+        abs_total = (
+            abs(full_weighted)
+            + abs(dynamic_weighted)
+            + abs(last_weighted)
+            + abs(balance_weighted)
+        )
+        abs_denom = abs_total if abs_total > 1e-12 else float("nan")
+
+        return {
+            "full_loss_raw": full_raw,
+            "last_loss_raw": last_raw,
+            "dynamic_loss_raw": dynamic_raw,
+            "balance_loss_raw": balance_raw,
+            "full_loss_weighted": full_weighted,
+            "last_loss_weighted": last_weighted,
+            "dynamic_loss_weighted": dynamic_weighted,
+            "balance_loss_weighted": balance_weighted,
+            "total_loss_recomputed": total,
+            "full_loss_share": full_weighted / denom,
+            "last_loss_share": last_weighted / denom,
+            "dynamic_loss_share": dynamic_weighted / denom,
+            "balance_loss_share": balance_weighted / denom,
+            "full_loss_abs_share": abs(full_weighted) / abs_denom,
+            "last_loss_abs_share": abs(last_weighted) / abs_denom,
+            "dynamic_loss_abs_share": abs(dynamic_weighted) / abs_denom,
+            "balance_loss_abs_share": abs(balance_weighted) / abs_denom,
+        }
+
+    @staticmethod
+    def _average_loss_audit(batch_audits):
+        if not batch_audits:
+            return {}
+        return {
+            key: float(np.average([row[key] for row in batch_audits]))
+            for key in batch_audits[0]
+        }
+
+    @staticmethod
+    def _checkpoint_path(args, setting):
+        checkpoint_setting = getattr(args, "checkpoint_setting", "") or setting
+        return os.path.join(args.checkpoints, checkpoint_setting, "checkpoint.pth")
+
     def _select_criterion(self):
         return self._reconstruction_loss
 
@@ -697,11 +761,13 @@ class Exp_Anomaly_Detection(Exp_Basic):
                 )
             )
 
+        epoch_loss_audits = []
         for epoch in range(self.args.train_epochs):
             iter_count = 0
             train_loss = []
             reconstruction_losses = []
             balance_losses = []
+            batch_loss_audits = []
             model_for_stats = (
                 self.model.module
                 if isinstance(self.model, nn.DataParallel)
@@ -755,6 +821,9 @@ class Exp_Anomaly_Detection(Exp_Basic):
                 train_loss.append(loss.item())
                 reconstruction_losses.append(loss_parts["reconstruction_loss"])
                 balance_losses.append(loss_parts["balance_loss"])
+                batch_loss_audits.append(
+                    self._loss_audit_from_parts(loss_parts, self.args)
+                )
                 routing_samples += batch_x.size(0)
                 for block_idx, block in enumerate(blocks_for_stats):
                     router = block.router
@@ -798,6 +867,19 @@ class Exp_Anomaly_Detection(Exp_Basic):
             balance_loss = (
                 float(np.average(balance_losses)) if balance_losses else 0.0
             )
+            loss_audit = self._average_loss_audit(batch_loss_audits)
+            if loss_audit:
+                loss_audit = {
+                    "epoch": epoch + 1,
+                    "steps": train_steps,
+                    "train_loss": train_loss,
+                    **loss_audit,
+                }
+                epoch_loss_audits.append(loss_audit)
+                pd.DataFrame(epoch_loss_audits).to_csv(
+                    os.path.join(self.loss_path, setting + "_loss_audit.csv"),
+                    index=False,
+                )
             vali_loss = self.vali(vali_data, vali_loader, criterion)
             print(
                 "Epoch: {0}, Steps: {1} | Train Loss: {2:.7f} "
@@ -811,6 +893,20 @@ class Exp_Anomaly_Detection(Exp_Basic):
                     vali_loss,
                 )
             )
+            if loss_audit:
+                print(
+                    "  Loss audit | full={:.4f} ({:.2%}) last={:.4f} ({:.2%}) "
+                    "dyn={:.4f} ({:.2%}) balance={:.4f} ({:.2%})".format(
+                        loss_audit["full_loss_weighted"],
+                        loss_audit["full_loss_abs_share"],
+                        loss_audit["last_loss_weighted"],
+                        loss_audit["last_loss_abs_share"],
+                        loss_audit["dynamic_loss_weighted"],
+                        loss_audit["dynamic_loss_abs_share"],
+                        loss_audit["balance_loss_weighted"],
+                        loss_audit["balance_loss_abs_share"],
+                    )
+                )
             if routing_samples:
                 for block_idx, load in enumerate(routing_loads):
                     total = load.sum()
@@ -1606,9 +1702,11 @@ class Exp_Anomaly_Detection(Exp_Basic):
 
         if test:
             print("loading model")
+            checkpoint_path = self._checkpoint_path(self.args, setting)
+            print("checkpoint path:", checkpoint_path)
             self.model.load_state_dict(
                 torch.load(
-                    os.path.join("./checkpoints", setting, "checkpoint.pth"),
+                    checkpoint_path,
                     map_location=self.device,
                 )
             )

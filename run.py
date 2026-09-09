@@ -49,6 +49,15 @@ def build_parser():
     parser.add_argument("--target", type=str, default="")
     parser.add_argument("--freq", type=str, default="s")
     parser.add_argument("--checkpoints", type=str, default="./checkpoints/")
+    parser.add_argument(
+        "--checkpoint_setting",
+        type=str,
+        default="",
+        help=(
+            "Optional existing checkpoint folder to load when --is_training 0. "
+            "Useful for post-hoc scoring diagnostics such as overlap_mean."
+        ),
+    )
 
     parser.add_argument("--seq_len", type=int, default=96)
     parser.add_argument("--label_len", type=int, default=0)
@@ -393,6 +402,7 @@ def normalize_args(args):
 def build_setting(args, iteration):
     excluded = {
         "checkpoints",
+        "checkpoint_setting",
         "device",
         "devices",
         "device_ids",

@@ -251,6 +251,7 @@ def test_score_diagnostics_writes_s1_s3_tables_and_s2_plots(tmp_path):
     assert (output_dir / "s3_score_distribution.png").exists()
     assert (output_dir / "s2_timeseries_Engine_full_power_loss.png").exists()
     assert (output_dir / "s2_timeseries_Rudder_stuck_to_right.png").exists()
+    assert (output_dir / "a6_event_phase_score_stats.csv").exists()
 
     auc_rows = pd.read_csv(output_dir / "s1_component_auc.csv")
     assert set(auc_rows["score_name"]) == {"S_obs_topk", "S_dyn", "S_total"}
@@ -355,3 +356,55 @@ def test_score_diagnostics_writes_s1_s3_tables_and_s2_plots(tmp_path):
     )
     g4_summary = pd.read_csv(output_dir / "g4_graph_trace_summary.csv")
     assert {"Position", "B1 cosine", "B2 cosine"}.issubset(g4_summary.columns)
+
+    phase_rows = pd.read_csv(output_dir / "a6_event_phase_score_stats.csv")
+    assert {
+        "anomaly_type",
+        "score_name",
+        "phase",
+        "mean",
+        "median",
+        "P95",
+    }.issubset(phase_rows.columns)
+    assert {"pre_normal", "early", "middle", "late"}.issubset(
+        set(phase_rows["phase"])
+    )
+
+
+def test_score_diagnostics_can_plot_overlap_mean_energy_without_components(tmp_path):
+    result_dir = tmp_path / "result"
+    result_dir.mkdir(parents=True)
+    labels = np.array([0, 0, 1, 1, 0, 0], dtype=int)
+    indices = np.arange(labels.size)
+    np.save(result_dir / "test_labels.npy", labels)
+    np.save(result_dir / "test_indices.npy", indices)
+    np.save(result_dir / "test_energy.npy", np.array([0.1, 0.2, 0.9, 0.8, 0.2, 0.1]))
+    np.save(result_dir / "threshold.npy", np.full(labels.size, 0.5))
+
+    meta = pd.DataFrame(
+        {
+            "fine_anomaly_type": [
+                "normal",
+                "normal",
+                "Engine full power loss",
+                "Engine full power loss",
+                "normal",
+                "normal",
+            ],
+            "segment_id": [0, 0, 1, 1, 1, 1],
+            "label": labels,
+        }
+    )
+    meta_path = tmp_path / "test_meta.csv"
+    meta.to_csv(meta_path, index=False)
+
+    output_dir = run_score_diagnostics(
+        result_dir=result_dir,
+        test_meta_path=meta_path,
+        fault_types=["Engine full power loss"],
+    )
+
+    auc_rows = pd.read_csv(output_dir / "s1_component_auc.csv")
+    assert set(auc_rows["score_name"]) == {"S_total"}
+    assert (output_dir / "s2_timeseries_Engine_full_power_loss.png").exists()
+    assert (output_dir / "s3_score_distribution.png").exists()
