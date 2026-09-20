@@ -1,1 +1,0 @@
-{"patch_size_list": [[8, 16, 32], [4, 8, 16]], "top_k": 2, "knn_k": 1, "graph_trace_positions": ["input", "after_adjacency", "residual_base", "after_residual", "after_norm"]}

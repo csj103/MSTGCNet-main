@@ -184,13 +184,3 @@ adj/*
 *.pdf
 
 可视化/*
-
-
-# pytest 临时文件
-.pytest_tmp/
-.pytest_cache/
-
-# Python 缓存
-__pycache__/
-*.pyc
-*.pyo

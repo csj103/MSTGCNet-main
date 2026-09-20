@@ -1,7 +1,0 @@
-anomaly_type,score_name,ROC-AUC,PR-AUC,points,anomaly_points
-Engine full power loss,S_obs_topk,,,2,2
-Engine full power loss,S_dyn,,,2,2
-Engine full power loss,S_total,,,2,2
-Rudder stuck to right,S_obs_topk,1.0,1.0,2,1
-Rudder stuck to right,S_dyn,0.0,0.5,2,1
-Rudder stuck to right,S_total,1.0,1.0,2,1

@@ -1,5 +1,0 @@
-score_name,ROC-AUC,PR-AUC
-S_MSE_topk,1.0,1.0
-S_stdres_topk,1.0,1.0
-S_unc_mean,1.0,1.0
-S_NLL_topk,1.0,1.0
