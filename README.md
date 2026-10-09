@@ -1,5 +1,41 @@
 # MSTGCNet
 
+## V12 CC-STGCN 消融：去掉图传播
+
+在本项目目录运行，使用同一份已经生成的 ALFA 数据：
+
+```powershell
+# 原版 V12 基线（训练并评估）
+python run.py
+
+# 消融 A：训练并评估不含图传播的模型
+python run.py --without_graph
+
+# 加载消融模型自己的最佳权重进行评估
+python run.py --without_graph --is_training 0
+```
+
+`--without_graph` 等价于 `--abl_GCN 1`，沿用原有消融分支。
+保留变量投影、所有 patch 尺度、块内时间注意力、逆 patch、LayerNorm、
+FFN、GMoE 路由及残差；仅跳过邻接矩阵构建、邻居聚合、图线性变换和
+图分支残差。它不是移除整个专家，也不是仅去掉因果掩码。
+
+实验名称自动增加 `_no_graph`，权重、图表和预测结果与默认基线分开。
+旧的 `--abl_GCN 1` 现在也使用该标记，已有旧消融目录不会被自动迁移。
+默认基线的名称和配置指纹不变。应从头训练消融模型，不能将完整模型
+权重直接关闭图后评估当作本次训练消融。重复同一命令仍会使用同名目录；
+若需保留多次运行，请指定不同的 `--implementation_tag`。
+
+两组保持原版 V12 的种子 2025、数据划分、归一化、训练参数、重构与均衡
+损失、验证准则、末点评分和 ATSSD 不变。可以保留 `paper_strict=true`：
+该检查只约束共同的超参数，并不表示消融结构是完整论文模型。
+
+为保持初始化随机数顺序和 state_dict 兼容性，图参数仍然注册，但消融
+前向不会使用它们，也不会为它们产生梯度。因此总参数量不会下降，不能
+据此声称参数压缩。比较优先查看 raw 指标，point-adjusted 指标依赖真值。
+原版硬 Top-k 图嵌入无梯度、路由负载概率偏移问题保持原样，因此结论
+应表述为“原版 V12 图传播分支的贡献”，而非作者完整实现的严格消融。
+
 Multiscale Spatio-Temporal Graph Convolutional Network for UAV Anomaly Detection
 
 **Note**: The complete project code will be released after the paper is accepted.

@@ -125,7 +125,15 @@ def build_parser():
     parser.add_argument("--alarm_confirmation", type=int, default=1)
     parser.add_argument("--latch_alarm", type=int, choices=[0, 1], default=0)
     parser.add_argument("--threshold_adaptation_clip", type=float, default=2.0)
-    parser.add_argument("--abl_GCN", type=int, default=0)
+    graph_options = parser.add_mutually_exclusive_group()
+    graph_options.add_argument(
+        "--abl_GCN", type=int, choices=[0, 1], default=0,
+        help="1 skips graph propagation, retaining patch attention and FFN.",
+    )
+    graph_options.add_argument(
+        "--without_graph", dest="abl_GCN", action="store_const", const=1,
+        help="CC-STGCN ablation: skip graph propagation (alias for --abl_GCN 1).",
+    )
     parser.add_argument("--abl_thre", type=int, default=1)
     parser.add_argument("--residual_connection", type=int, default=1)
     parser.add_argument("--batch_norm", type=int, default=0)
@@ -271,10 +279,11 @@ def build_setting(args, iteration):
         default=str,
     )
     fingerprint = hashlib.sha1(serialized.encode("utf-8")).hexdigest()[:10]
+    ablation_suffix = "_no_graph" if args.abl_GCN else ""
     return (
         f"{args.model_id}_{args.model}_sl{args.seq_len}_dm{args.d_model}"
         f"_el{args.e_layers}_{args.score_mode}_{args.threshold_method}"
-        f"_{args.implementation_tag}_cfg{fingerprint}_{iteration}"
+        f"_{args.implementation_tag}{ablation_suffix}_cfg{fingerprint}_{iteration}"
     )
 
 
@@ -291,6 +300,11 @@ if __name__ == "__main__":
     print("mps", hasattr(torch.backends, "mps") and torch.backends.mps.is_available())
     print("Args in experiment:")
     print_args(args)
+    print(
+        "CC-STGCN: graph propagation disabled; patch attention and FFN retained."
+        if args.abl_GCN
+        else "CC-STGCN: original V12 graph propagation enabled."
+    )
 
     exp_cls = Exp_Anomaly_Detection
     os.makedirs(args.checkpoints, exist_ok=True)
