@@ -1,0 +1,102 @@
+[
+  {
+    "layer": 0,
+    "expert": 0,
+    "patch_size": 8,
+    "num_nodes": 120,
+    "representative_batch_index": 9,
+    "node_order": "patch*V+variable",
+    "matrix_orientation": "target_source",
+    "file": "layer0_expert0_p8.npy"
+  },
+  {
+    "layer": 0,
+    "expert": 1,
+    "patch_size": 12,
+    "num_nodes": 80,
+    "representative_batch_index": 0,
+    "node_order": "patch*V+variable",
+    "matrix_orientation": "target_source",
+    "file": "layer0_expert1_p12.npy"
+  },
+  {
+    "layer": 0,
+    "expert": 2,
+    "patch_size": 16,
+    "num_nodes": 60,
+    "representative_batch_index": 0,
+    "node_order": "patch*V+variable",
+    "matrix_orientation": "target_source",
+    "file": "layer0_expert2_p16.npy"
+  },
+  {
+    "layer": 0,
+    "expert": 3,
+    "patch_size": 32,
+    "num_nodes": 30,
+    "representative_batch_index": 0,
+    "node_order": "patch*V+variable",
+    "matrix_orientation": "target_source",
+    "file": "layer0_expert3_p32.npy"
+  },
+  {
+    "layer": 1,
+    "expert": 0,
+    "patch_size": 6,
+    "num_nodes": 160,
+    "representative_batch_index": 0,
+    "node_order": "patch*V+variable",
+    "matrix_orientation": "target_source",
+    "file": "layer1_expert0_p6.npy"
+  },
+  {
+    "layer": 1,
+    "expert": 2,
+    "patch_size": 12,
+    "num_nodes": 80,
+    "representative_batch_index": 0,
+    "node_order": "patch*V+variable",
+    "matrix_orientation": "target_source",
+    "file": "layer1_expert2_p12.npy"
+  },
+  {
+    "layer": 1,
+    "expert": 3,
+    "patch_size": 16,
+    "num_nodes": 60,
+    "representative_batch_index": 0,
+    "node_order": "patch*V+variable",
+    "matrix_orientation": "target_source",
+    "file": "layer1_expert3_p16.npy"
+  },
+  {
+    "layer": 2,
+    "expert": 0,
+    "patch_size": 2,
+    "num_nodes": 480,
+    "representative_batch_index": 0,
+    "node_order": "patch*V+variable",
+    "matrix_orientation": "target_source",
+    "file": "layer2_expert0_p2.npy"
+  },
+  {
+    "layer": 2,
+    "expert": 2,
+    "patch_size": 8,
+    "num_nodes": 120,
+    "representative_batch_index": 0,
+    "node_order": "patch*V+variable",
+    "matrix_orientation": "target_source",
+    "file": "layer2_expert2_p8.npy"
+  },
+  {
+    "layer": 2,
+    "expert": 3,
+    "patch_size": 12,
+    "num_nodes": 80,
+    "representative_batch_index": 0,
+    "node_order": "patch*V+variable",
+    "matrix_orientation": "target_source",
+    "file": "layer2_expert3_p12.npy"
+  }
+]

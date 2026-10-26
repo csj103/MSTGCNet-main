@@ -1,0 +1,17 @@
+{
+  "command": "python -m pytest tests -q --import-mode=importlib",
+  "passed": 57,
+  "failed": 0,
+  "source_commit": "33abe21c746062d72aaec8eafeb020dd2996eb22",
+  "baseline_commit": "5382d528ff93d03f5a30e3b34563c4e70803f5e0",
+  "gpu_tested": false,
+  "full_training": false,
+  "real_test_metrics_computed": false,
+  "synthetic_train_checkpoint_score_integration_tested": true,
+  "smoke_command": "python scripts/check_variable_granger.py --steps 8 --batch-size 4 --threads 2",
+  "prior_command": "python scripts/build_granger_prior.py --root dataset/ALFA10vars_20hz --max-lag 5",
+  "prior_sha256": "a89097941714dddf89658754893a313099e2ab54dd0c70c8ace6f249a3f077fd",
+  "full_suite_tested_code_commit": "7eaa16dc10b5b7345ad74e2d4e6153296103c133",
+  "smoke_source_commit": "33abe21c746062d72aaec8eafeb020dd2996eb22",
+  "subsequent_change": "run.py startup graph-mode log wording only; full suite rerun: 57 passed"
+}

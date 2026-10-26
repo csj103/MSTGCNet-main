@@ -1,0 +1,15 @@
+{
+  "mode": "E4",
+  "batch": 16,
+  "shape": [
+    16,
+    96,
+    10
+  ],
+  "finite_loss": true,
+  "elapsed_seconds": 1.3388072999987344,
+  "rss_before_mib": 316.76953125,
+  "rss_after_mib": 855.13671875,
+  "process_peak_working_set_mib": 896.03125,
+  "scope": "CPU batch16 forward/backward; GPU/default batch128 not tested"
+}
