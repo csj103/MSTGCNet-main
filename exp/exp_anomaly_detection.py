@@ -85,13 +85,15 @@ class Exp_Anomaly_Detection(Exp_Basic):
             key: str(value) if isinstance(value, torch.device) else value
             for key, value in vars(self.args).items()
         }
+        from utils.experiment_reporting import experiment_provenance
         with open(
             os.path.join(path, "experiment_config.json"),
             "w",
             encoding="utf-8",
         ) as file:
             json.dump(
-                {"setting": setting, "args": config},
+                {"setting": setting, "args": config,
+                 "implementation": experiment_provenance(self.args)},
                 file,
                 ensure_ascii=False,
                 indent=2,
@@ -191,10 +193,14 @@ class Exp_Anomaly_Detection(Exp_Basic):
                 )
             )
             if routing_samples:
+                routing_report = []
                 for block_idx, load in enumerate(routing_loads):
                     total = load.sum()
                     fractions = load / total if total else load
                     entropy = routing_entropy[block_idx] / routing_samples
+                    routing_report.append(dict(block=block_idx,selection_counts=load.tolist(),
+                        selection_fractions=fractions.tolist(),per_window_selection_rate=(load/routing_samples).tolist(),
+                        entropy=float(entropy),samples=routing_samples))
                     print(
                         "  Router block {} | load={} fractions={} entropy={:.6f}".format(
                             block_idx + 1,
@@ -203,6 +209,8 @@ class Exp_Anomaly_Detection(Exp_Basic):
                             entropy,
                         )
                     )
+                with open(os.path.join(path, f'routing_epoch_{epoch+1}.json'), 'w', encoding='utf-8') as file:
+                    json.dump(routing_report, file, indent=2)
 
             early_stopping(vali_loss, self.model, path)
             if early_stopping.early_stop:
@@ -518,7 +526,7 @@ class Exp_Anomaly_Detection(Exp_Basic):
             print("loading model")
             self.model.load_state_dict(
                 torch.load(
-                    os.path.join("./checkpoints", setting, "checkpoint.pth"),
+                    os.path.join(self.args.checkpoints, setting, "checkpoint.pth"),
                     map_location=self.device,
                 )
             )
@@ -638,6 +646,10 @@ class Exp_Anomaly_Detection(Exp_Basic):
                 os.path.join(res_path, "adjusted_metrics_by_anomaly_type.csv"),
                 index=False,
             )
+
+        from utils.experiment_reporting import export_evaluation
+        export_evaluation(self, res_path, test_data, gt, raw_pred, adjusted_pred,
+                          test_energy, score_indices, raw, adjusted, roc_auc, pr_auc)
 
         raw_line = (
             "Raw      Accuracy : {:0.4f}, Precision : {:0.4f}, "

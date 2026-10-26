@@ -50,6 +50,10 @@ class Dataset_ALFA(Dataset):
 
         train_data = pd.read_csv(os.path.join(root_path, "train.csv"))
         test_data = pd.read_csv(os.path.join(root_path, "test.csv"))
+        if getattr(args, 'experiment_mode', 'E0') != 'E0':
+            expected = list(args.variable_names)
+            if list(train_data.columns[1:-1]) != expected or list(test_data.columns[1:-1]) != expected:
+                raise ValueError('ALFA CSV variable order differs from experiment variable_names')
         metadata_path = os.path.join(root_path, "metadata.json")
         metadata = {}
         if os.path.exists(metadata_path):
@@ -64,6 +68,9 @@ class Dataset_ALFA(Dataset):
             if has_explicit_val
             else None
         )
+        if getattr(args, 'experiment_mode', 'E0') != 'E0' and val_data is not None:
+            if list(val_data.columns[1:-1]) != list(args.variable_names):
+                raise ValueError('ALFA validation CSV variable order differs from variable_names')
         train_meta_path = os.path.join(root_path, "train_meta.csv")
         test_meta_path = os.path.join(root_path, "test_meta.csv")
         val_meta_path = os.path.join(root_path, "val_meta.csv")

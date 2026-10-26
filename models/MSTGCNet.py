@@ -111,11 +111,15 @@ class TrendSeasonalRouter(nn.Module):
         prob_if_out = normal.cdf(scaled_if_out)
         return torch.where(is_in, prob_if_in, prob_if_out)
 
-    def forward(self, x):
+    def _routing_features(self, x):
         seasonal = self._seasonal(x)
         trend = self._trend(x)
         transformed = self.merge(x + seasonal + trend)
         routing_input = self.channel_projection(transformed).squeeze(-1)
+        return routing_input, transformed
+
+    def forward(self, x):
+        routing_input, transformed = self._routing_features(x)
         clean_logits = self.router_norm(self.router(routing_input))
         if self.training and self.noisy:
             noise_std = self.softplus(self.noise_norm(self.noise(routing_input)))
@@ -327,15 +331,18 @@ class GMoEBlock(nn.Module):
 
         expert_contributions = []
         adj_list = []
+        capture = any(getattr(e, 'capture_graph', False) for e in self.experts)
+        if capture: self.last_selected_indices = {}
         for expert_idx, expert in enumerate(self.experts):
             selected = sparse_weights[:, expert_idx] > 0
             selected_indices = selected.nonzero(as_tuple=False).squeeze(-1)
+            if capture: self.last_selected_indices[expert_idx] = selected_indices.detach().cpu().tolist()
             contribution = torch.zeros_like(x)
             if selected_indices.numel() > 0:
                 expert_output, adj = expert(x.index_select(0, selected_indices))
                 expert_weight = sparse_weights.index_select(
                     0, selected_indices
-                )[:, expert_idx].view(-1, 1, 1)
+                )[:, expert_idx].view(-1, *([1] * (x.ndim - 1)))
                 contribution = contribution.index_copy(
                     0, selected_indices, expert_output * expert_weight
                 )
@@ -359,7 +366,7 @@ class GMoEBlock(nn.Module):
         return variance / (mean.pow(2) + 1e-10)
 
 
-class Model(nn.Module):
+class BaselineModel(nn.Module):
     def __init__(self, configs):
         super().__init__()
         self.enc_in = configs.enc_in
@@ -431,3 +438,11 @@ class Model(nn.Module):
         if self.revin:
             dec_out = self.revin_layer(dec_out, "denorm")
         return dec_out, self.loss_coef * balance_loss
+
+
+def Model(configs):
+    """Model factory; E0 retains baseline modules and checkpoint keys exactly."""
+    if getattr(configs, 'experiment_mode', 'E0') == 'E0':
+        return BaselineModel(configs)
+    from models.variable_granger import VariableModel
+    return VariableModel(configs)

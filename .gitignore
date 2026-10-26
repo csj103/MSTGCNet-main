@@ -184,3 +184,8 @@ adj/*
 *.pdf
 
 可视化/*
+
+# Reproducible CPU verification retains reports/plots; local smoke weights and
+# dense graph arrays are generated artifacts, not GPU training checkpoints.
+/analysis/variable_granger_v1/verification/*/smoke_checkpoint.pth
+/analysis/variable_granger_v1/verification/*/graphs/*.npy
