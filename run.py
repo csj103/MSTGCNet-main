@@ -346,11 +346,16 @@ if __name__ == "__main__":
     print("mps", hasattr(torch.backends, "mps") and torch.backends.mps.is_available())
     print("Args in experiment:")
     print_args(args)
-    print(
-        "CC-STGCN: graph propagation disabled; patch attention and FFN retained."
-        if args.abl_GCN
-        else "CC-STGCN: original V12 graph propagation enabled."
-    )
+    graph_descriptions = {
+        'E0': 'original V12 representation and graph',
+        'E1': 'variable features + original fixed-embedding graph',
+        'E2': 'variable features + input-dependent dynamic graph',
+        'E3': 'variable features + fixed historical Granger graph',
+        'E4': 'variable features + Granger-guided dynamic graph',
+        'E5': 'variable features + shuffled-Granger dynamic graph',
+    }
+    print('CC-STGCN: graph propagation disabled; patch attention and FFN retained.'
+          if args.abl_GCN else f'{args.experiment_mode}: {graph_descriptions[args.experiment_mode]}')
 
     exp_cls = Exp_Anomaly_Detection
     os.makedirs(args.checkpoints, exist_ok=True)
