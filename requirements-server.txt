@@ -1,0 +1,13 @@
+# MSTGCNet E0--E5, Python 3.12.
+# Install GPU PyTorch separately, choosing its official CUDA wheel index.
+# Default candidate: torch==2.12.1 from https://download.pytorch.org/whl/cu126
+# Core numerical/plotting versions match the locally verified CPU environment.
+numpy==1.26.4
+pandas==2.2.2
+scipy==1.13.1
+scikit-learn==1.5.1
+matplotlib==3.9.2
+# CPU regression tests and structural verification.
+pytest==7.4.4
+# Only imported by the legacy utils/Other.py helper; not used by E0--E5.
+einops==0.8.0
