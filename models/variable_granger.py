@@ -14,12 +14,13 @@ from torch.nn import functional as F
 from layers.GrangerPrior import expand_prior, load_granger_prior
 from layers.RevIN import RevIN
 from models.MSTGCNet import CCSTGCNExpert, GMoEBlock, PositionalEncoding, TrendSeasonalRouter
+from utils.input_padding import resolve_input_padding
 
 
 class VariableEncoder(nn.Module):
-    def __init__(self, num_vars, d_var):
+    def __init__(self, num_vars, d_var, padding_mode='replicate'):
         super().__init__()
-        self.temporal = nn.Conv1d(1, d_var, 3, padding=1, padding_mode='replicate')
+        self.temporal = nn.Conv1d(1, d_var, 3, padding=1, padding_mode=padding_mode)
         self.identity = nn.Parameter(torch.empty(num_vars, d_var))
         nn.init.normal_(self.identity, std=.02)
 
@@ -171,7 +172,7 @@ class VariableModel(nn.Module):
             matrix=matrix[permutation][:,permutation]
         self.register_buffer('prior_permutation',permutation)
         self.register_buffer('prior_matrix',matrix)
-        self.encoder=VariableEncoder(args.enc_in,args.d_var)
+        self.encoder=VariableEncoder(args.enc_in,args.d_var,resolve_input_padding(args))
         self.position_embedding=PositionalEncoding(args.d_var)
         self.dropout=nn.Dropout(args.dropout)
         self.blocks=nn.ModuleList([VariableGMoEBlock(args,i,matrix,int(self.prior_metadata.get('max_lag',1))) for i in range(args.e_layers)])

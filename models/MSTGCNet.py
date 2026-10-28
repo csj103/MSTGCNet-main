@@ -6,6 +6,7 @@ import torch.nn.functional as F
 from torch.distributions.normal import Normal
 
 from layers.RevIN import RevIN
+from utils.input_padding import resolve_input_padding
 
 
 class PositionalEncoding(nn.Module):
@@ -380,7 +381,7 @@ class BaselineModel(nn.Module):
             out_channels=configs.d_model,
             kernel_size=3,
             padding=1,
-            padding_mode="circular",
+            padding_mode=resolve_input_padding(configs),
             bias=False,
         )
         nn.init.kaiming_normal_(

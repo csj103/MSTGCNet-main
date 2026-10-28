@@ -9,6 +9,7 @@ import torch
 
 from exp.exp_anomaly_detection import Exp_Anomaly_Detection
 from utils.print_args import print_args
+from utils.input_padding import native_input_padding, resolve_input_padding
 
 
 REPRO_PATCH_SIZE_LIST = [
@@ -37,6 +38,8 @@ def build_parser():
     parser.add_argument("--model_id", type=str, default="ALFA10vars")
     parser.add_argument("--model", type=str, default="MSTGCNet")
     parser.add_argument('--experiment_mode', choices=['E0','E1','E2','E3','E4','E5'], default='E0')
+    parser.add_argument('--input_padding', choices=['default', 'circular', 'replicate'], default='default',
+                        help='Input convolution only; default preserves E0=circular, E1--E5=replicate.')
     parser.add_argument('--d_var', type=int, choices=[16,32], default=16)
     parser.add_argument('--graph_dim', type=int, default=16)
     parser.add_argument('--granger_prior', type=str, default='')
@@ -310,6 +313,13 @@ def build_setting(args, iteration):
         for key, value in vars(args).items()
         if key not in excluded
     }
+    padding = resolve_input_padding(args)
+    padding_control = padding != native_input_padding(args.experiment_mode)
+    if padding_control:
+        fingerprint_payload['input_padding'] = padding
+    else:
+        # Default and explicitly requested native padding retain old checkpoints.
+        fingerprint_payload.pop('input_padding', None)
     if args.experiment_mode == 'E0':
         # Preserve original default fingerprint and checkpoint naming.
         for key in ('experiment_mode','d_var','graph_dim','granger_prior','lambda_prior',
@@ -324,7 +334,10 @@ def build_setting(args, iteration):
     )
     fingerprint = hashlib.sha1(serialized.encode("utf-8")).hexdigest()[:10]
     ablation_suffix = "_no_graph" if args.abl_GCN else ""
-    if args.experiment_mode != 'E0': ablation_suffix += '_' + args.experiment_mode
+    if padding_control:
+        ablation_suffix += '_' + args.experiment_mode + 'P'
+    elif args.experiment_mode != 'E0':
+        ablation_suffix += '_' + args.experiment_mode
     return (
         f"{args.model_id}_{args.model}_sl{args.seq_len}_dm{args.d_model}"
         f"_el{args.e_layers}_{args.score_mode}_{args.threshold_method}"
@@ -356,6 +369,7 @@ if __name__ == "__main__":
     }
     print('CC-STGCN: graph propagation disabled; patch attention and FFN retained.'
           if args.abl_GCN else f'{args.experiment_mode}: {graph_descriptions[args.experiment_mode]}')
+    print('Input convolution padding:', resolve_input_padding(args))
 
     exp_cls = Exp_Anomaly_Detection
     os.makedirs(args.checkpoints, exist_ok=True)

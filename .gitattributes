@@ -1,0 +1,2 @@
+# Keep the server launcher runnable when cloned from Windows-managed history.
+scripts/run_padding_ablation.sh text eol=lf

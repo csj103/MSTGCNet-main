@@ -1,0 +1,58 @@
+{
+  "scope": "CPU verification only; no full training and no detection improvement claim",
+  "date_utc": "2026-10-28T03:51:51.904766+00:00",
+  "branch": "exp/variable-granger-v1",
+  "baseline_commit": "e54ce30926bc901c2a271d5067a9bd92b7db73fd",
+  "python": "3.12.7",
+  "torch": "2.12.1+cpu",
+  "tests": {
+    "command": "python -m pytest tests -q --import-mode=importlib",
+    "passed": 65
+  },
+  "legacy_E0": {
+    "commit": "5382d528ff93d03f5a30e3b34563c4e70803f5e0",
+    "state_dict_bit_exact": true,
+    "output_and_aux_bit_exact": true,
+    "default_setting_bit_exact": true,
+    "parameters": 463144
+  },
+  "server_pairs": {
+    "E0-P": {
+      "source_config": "服务器训练结果/checkpoints/ALFA10vars_MSTGCNet_sl96_dm64_el3_causal_last_atssd_v12_finegrained_cfg2560bc9989_0/experiment_config.json",
+      "source_setting": "ALFA10vars_MSTGCNet_sl96_dm64_el3_causal_last_atssd_v12_finegrained_cfg2560bc9989_0",
+      "new_setting": "ALFA10vars_MSTGCNet_sl96_dm64_el3_causal_last_atssd_v12_finegrained_E0P_cfg5fb434e5c7_0",
+      "input_padding": "replicate",
+      "other_training_arguments_equal": true,
+      "training_validation_data_sha256_equal": true,
+      "expected_local_device_difference": "CPU here; CUDA on server",
+      "parameters": 463144,
+      "fresh_training": true,
+      "checkpoint_directory_distinct": true
+    },
+    "E1-P": {
+      "source_config": "服务器训练结果/checkpoints/ALFA10vars_MSTGCNet_sl96_dm64_el3_causal_last_atssd_v12_finegrained_E1_cfg150d86e7d6_0/experiment_config.json",
+      "source_setting": "ALFA10vars_MSTGCNet_sl96_dm64_el3_causal_last_atssd_v12_finegrained_E1_cfg150d86e7d6_0",
+      "new_setting": "ALFA10vars_MSTGCNet_sl96_dm64_el3_causal_last_atssd_v12_finegrained_E1P_cfg548847f537_0",
+      "input_padding": "circular",
+      "other_training_arguments_equal": true,
+      "training_validation_data_sha256_equal": true,
+      "expected_local_device_difference": "CPU here; CUDA on server",
+      "parameters": 336938,
+      "fresh_training": true,
+      "checkpoint_directory_distinct": true
+    }
+  },
+  "legacy_E1": {
+    "state_dict_bit_exact": true,
+    "output_and_aux_bit_exact": true,
+    "commit": "e54ce30926bc901c2a271d5067a9bd92b7db73fd"
+  },
+  "source_sha256": {
+    "run.py": "5041e87e1b1b18d0f298a80dd2aeba8d03978cd1458b2e45d171e042c8f6981b",
+    "models/MSTGCNet.py": "212c8217dda2bcfd8a1e277ab99efe359db316a8e39b78999386fee8b6eab150",
+    "models/variable_granger.py": "bc6a2ad52961494d81ff9089f0f975a1858db5db9504d623d082b16b8289f991",
+    "utils/input_padding.py": "93f7590a2c3198a24a143c8cd0f5b711b83c98dfb039f2c8102a0fd26d30360f",
+    "tests/test_input_padding.py": "2d6b511919d3d8de8057b6d759a7dd917b8b06846d2ca1a80bcc66d6601f8dda",
+    "scripts/run_padding_ablation.sh": "f5ce341de1dfa4a9c4f465323bf429d3762d9b9a7aedad0ff905bd8dd3db63b6"
+  }
+}
