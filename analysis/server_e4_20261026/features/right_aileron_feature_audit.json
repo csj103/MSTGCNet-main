@@ -1,0 +1,259 @@
+{
+  "scope": "Only all 2566 previously scored right-aileron-flight windows; no training, no test-label tuning",
+  "root": "D:\\研究生文件\\代码复现\\MSTGCNet-main-MSTGCNet-v12-",
+  "checkpoint": "D:\\研究生文件\\代码复现\\MSTGCNet-main-MSTGCNet-v12-\\服务器训练结果\\checkpoints\\ALFA10vars_MSTGCNet_sl96_dm64_el3_causal_last_atssd_v12_finegrained_E4_cfg515879a959_0\\checkpoint.pth",
+  "checkpoint_sha256": "7c3769b8a10bec29c633d6876d0496baf7f07afc202b71c2dd1265c8a431b1cb",
+  "experiment_config_sha256": "85aff13597b79fc374a435f969dc6e21bfe375724333580397f7dd209f611e8c",
+  "torch_version": "2.12.1+cpu",
+  "numpy_version": "1.26.4",
+  "device": "cpu",
+  "threads": 2,
+  "batch_size": 16,
+  "mode": "eval with torch.no_grad",
+  "strict_checkpoint_load": "<All keys matched successfully>",
+  "scored_windows": 2566,
+  "normal_points": 2144,
+  "anomaly_points": 422,
+  "segment_id": 5,
+  "source_file": "carbonZ_2018-09-11-17-55-30_1_right_aileron_failure.csv",
+  "indices_min": 10132,
+  "indices_max": 12697,
+  "labels_equal": true,
+  "windows_present_in_Dataset_ALFA": true,
+  "score_comparison": {
+    "np_allclose_default": false,
+    "allclose_rtol_1e_4_atol_1e_7": false,
+    "max_abs_error": 2.8270762413740158e-05,
+    "mean_abs_error": 1.4242158563604335e-08,
+    "max_relative_error": 0.013193810358643532,
+    "abs_error_exceeds_1e_7": 3,
+    "abs_error_exceeds_1e_6": 1,
+    "abs_error_exceeds_1e_5": 1,
+    "default_isclose_failures": 3,
+    "max_difference_endpoint": 11182,
+    "max_difference_label": 0,
+    "max_difference_local_energy": 0.0021144584752619267,
+    "max_difference_saved_energy": 0.002142729237675667,
+    "decisions_changed_using_identical_saved_threshold": 0,
+    "decision_change_endpoints": [],
+    "limitation": "Strict allclose fails. CPU/GPU arithmetic and hard TopK boundary sensitivity are possible causes, not established causes."
+  },
+  "aggregate_local": {
+    "roc_auc": 0.37133055103628776,
+    "ap": 0.1222419310284042,
+    "normal_mean": 0.002890300005674362,
+    "anomaly_mean": 0.0012312585022300482,
+    "normal_median": 0.0012112724361941218,
+    "anomaly_median": 0.000652773305773735
+  },
+  "aggregate_saved": {
+    "roc_auc": 0.3713294457805758,
+    "ap": 0.1222417031510939
+  },
+  "source_hashes": {
+    "run.py": {
+      "expected": "8bf6568fc5df5aac2a622c6a68711dc44fdda5cd2840aa07497f6b2a2fdc1faa",
+      "actual": "1ea8d0b53ebcdad3e572600f994d30127d68c16498383f6f1fd907f01c83afe8",
+      "local_lf_as_crlf_matches_server": true
+    },
+    "models/MSTGCNet.py": {
+      "expected": "5410e3521a4d8a3618ded588ad589c590c7f23c01a6932842bed8de791338fad",
+      "actual": "97c551dcd3a1184a1af51092d0ce092c37e9ab9bc24d12ab02ce70b314de848a",
+      "local_lf_as_crlf_matches_server": true
+    },
+    "models/variable_granger.py": {
+      "expected": "4f2216c11c9994ae0a7828141ee403ed61707d725dea84177d974cf8f7c95a52",
+      "actual": "65b9389fa44d45d7d17fc6cc650762a5610dc11a6956438996f2af4c6c4e5058",
+      "local_lf_as_crlf_matches_server": true
+    },
+    "layers/GrangerPrior.py": {
+      "expected": "a97553f107c56b0c3f27edbec2346f60e2e9f1ecb915303c60cd5c42241ce17d",
+      "actual": "4bb9b86288b81268dda7db6d5a23e235c7654c78146125afd869ffbcd4f47d89",
+      "local_lf_as_crlf_matches_server": true
+    },
+    "exp/exp_anomaly_detection.py": {
+      "expected": "324879469333c9d907e12b7ff852b524b27b25f7fddbc9dba48cc9866ad7e175",
+      "actual": "9c7a0b6017ef0c48aa94078669e3877211a54a8178084093b91340b65fa7222e",
+      "local_lf_as_crlf_matches_server": true
+    },
+    "data_provider/data_loader.py": {
+      "expected": "aafa9ed46b5d4c30ce0922242d64bffc676a0b6a0976c57cc1222d28f06ce4ad",
+      "actual": "0324c39194e212936b513ab530a116961bd1c3829aeb535cea5e10d4ed690bba",
+      "local_lf_as_crlf_matches_server": true
+    },
+    "utils/atssd.py": {
+      "expected": "a698e949d06d2b95d0211cd1d8be31b50f173e7f7efd9b0b45af31ddb223f2a0",
+      "actual": "4e830cb5ee99fea9ff67285e5d39c9cfa69175de7886ab7c0a217ba247a976b6",
+      "local_lf_as_crlf_matches_server": true
+    }
+  },
+  "data_hashes": {
+    "train.csv": {
+      "expected": "b48fed83292eb2a107f17fb36de48eaf0e10326ee17e4e3831b054bce1d70533",
+      "actual": "b48fed83292eb2a107f17fb36de48eaf0e10326ee17e4e3831b054bce1d70533"
+    },
+    "train_meta.csv": {
+      "expected": "0b4c41a3b05dc121f6612e3e89b494b335b2c8f2a54241ca2d82611b12026bce",
+      "actual": "0b4c41a3b05dc121f6612e3e89b494b335b2c8f2a54241ca2d82611b12026bce"
+    },
+    "val.csv": {
+      "expected": "88ed53765cc292bcdbd8d258f8de00deafb8c4f98b74946498bebb7c41fafbd7",
+      "actual": "88ed53765cc292bcdbd8d258f8de00deafb8c4f98b74946498bebb7c41fafbd7"
+    },
+    "val_meta.csv": {
+      "expected": "86dd6dfa731854b4e0959d04cd8b5b5af50927f466b516526ca17e8043861fcf",
+      "actual": "86dd6dfa731854b4e0959d04cd8b5b5af50927f466b516526ca17e8043861fcf"
+    },
+    "metadata.json": {
+      "expected": "c580f052699701327ee524c865c94c8a77808501c2a02f7edb89f2d1b88b7f8b",
+      "actual": "c580f052699701327ee524c865c94c8a77808501c2a02f7edb89f2d1b88b7f8b"
+    }
+  },
+  "feature_metrics": [
+    {
+      "variable": "alt_error",
+      "normal_points": 2144,
+      "anomaly_points": 422,
+      "normal_mean": 6.834313535364345e-05,
+      "anomaly_mean": 1.6050664271460846e-05,
+      "normal_median": 1.3135782864992507e-05,
+      "anomaly_median": 3.136061650366173e-06,
+      "roc_auc": 0.32617864469123575,
+      "ap": 0.11413268676497693,
+      "normal_contribution_share": 0.002364565385505557,
+      "anomaly_contribution_share": 0.00130359863396734,
+      "total_contribution_share": 0.0022824874613434076
+    },
+    {
+      "variable": "aspd_error",
+      "normal_points": 2144,
+      "anomaly_points": 422,
+      "normal_mean": 0.0014203415485098958,
+      "anomaly_mean": 0.0014086789451539516,
+      "normal_median": 0.0002200029994128272,
+      "anomaly_median": 0.0003257723292335868,
+      "roc_auc": 0.5225836899625097,
+      "ap": 0.16931228908183343,
+      "normal_contribution_share": 0.04914169758558273,
+      "anomaly_contribution_share": 0.11440959572792053,
+      "total_contribution_share": 0.0541909784078598
+    },
+    {
+      "variable": "xtrack_error",
+      "normal_points": 2144,
+      "anomaly_points": 422,
+      "normal_mean": 0.0021266357507556677,
+      "anomaly_mean": 8.216268724936526e-06,
+      "normal_median": 1.8415827298667864e-06,
+      "anomaly_median": 5.420888555818237e-07,
+      "roc_auc": 0.38712576041592983,
+      "ap": 0.12369915280266311,
+      "normal_contribution_share": 0.0735781341791153,
+      "anomaly_contribution_share": 0.0006673064199276268,
+      "total_contribution_share": 0.06793761253356934
+    },
+    {
+      "variable": "wp_dist",
+      "normal_points": 2144,
+      "anomaly_points": 422,
+      "normal_mean": 0.00023819833586458117,
+      "anomaly_mean": 0.000327871908666566,
+      "normal_median": 0.00013111461885273457,
+      "anomaly_median": 0.00027555518317967653,
+      "roc_auc": 0.550838446983094,
+      "ap": 0.21445674060558947,
+      "normal_contribution_share": 0.008241301402449608,
+      "anomaly_contribution_share": 0.0266290120780468,
+      "total_contribution_share": 0.009663804434239864
+    },
+    {
+      "variable": "nav_roll",
+      "normal_points": 2144,
+      "anomaly_points": 422,
+      "normal_mean": 0.006160867866128683,
+      "anomaly_mean": 0.0029707991052418947,
+      "normal_median": 0.00048285291995853186,
+      "anomaly_median": 0.0003951186372432858,
+      "roc_auc": 0.4598327969158944,
+      "ap": 0.14488641031378136,
+      "normal_contribution_share": 0.21315699815750122,
+      "anomaly_contribution_share": 0.24128150939941406,
+      "total_contribution_share": 0.21533286571502686
+    },
+    {
+      "variable": "nav_pitch",
+      "normal_points": 2144,
+      "anomaly_points": 422,
+      "normal_mean": 0.009036167524755001,
+      "anomaly_mean": 0.002675964031368494,
+      "normal_median": 0.0005902703269384801,
+      "anomaly_median": 0.00033723958767950535,
+      "roc_auc": 0.41735560939378935,
+      "ap": 0.13163906036028394,
+      "normal_contribution_share": 0.31263765692710876,
+      "anomaly_contribution_share": 0.21733571588993073,
+      "total_contribution_share": 0.30526483058929443
+    },
+    {
+      "variable": "nav_yaw",
+      "normal_points": 2144,
+      "anomaly_points": 422,
+      "normal_mean": 0.0005892072804272175,
+      "anomaly_mean": 0.0005295046139508486,
+      "normal_median": 2.3546648662886582e-05,
+      "anomaly_median": 1.1581324542930815e-05,
+      "roc_auc": 0.47523729840135814,
+      "ap": 0.1583196105279463,
+      "normal_contribution_share": 0.020385676994919777,
+      "anomaly_contribution_share": 0.043005168437957764,
+      "total_contribution_share": 0.022135555744171143
+    },
+    {
+      "variable": "nav_x",
+      "normal_points": 2144,
+      "anomaly_points": 422,
+      "normal_mean": 0.002130398992449045,
+      "anomaly_mean": 0.0015968655934557319,
+      "normal_median": 4.3519296013982967e-05,
+      "anomaly_median": 3.1573170417686924e-05,
+      "roc_auc": 0.480151265296739,
+      "ap": 0.15191726298845293,
+      "normal_contribution_share": 0.07370860129594803,
+      "anomaly_contribution_share": 0.12969379127025604,
+      "total_contribution_share": 0.07803970575332642
+    },
+    {
+      "variable": "nav_y",
+      "normal_points": 2144,
+      "anomaly_points": 422,
+      "normal_mean": 0.0011180719593539834,
+      "anomaly_mean": 0.0008503184071741998,
+      "normal_median": 6.837327964603901e-05,
+      "anomaly_median": 1.6432097254437394e-05,
+      "roc_auc": 0.4296057110773148,
+      "ap": 0.1441029318554623,
+      "normal_contribution_share": 0.03868364915251732,
+      "anomaly_contribution_share": 0.06906092911958694,
+      "total_contribution_share": 0.041033726185560226
+    },
+    {
+      "variable": "nav_z",
+      "normal_points": 2144,
+      "anomaly_points": 422,
+      "normal_mean": 0.0060147689655423164,
+      "anomaly_mean": 0.0019283161964267492,
+      "normal_median": 0.001590114552527666,
+      "anomaly_median": 0.0006463862373493612,
+      "roc_auc": 0.36668626653462544,
+      "ap": 0.12078424657575323,
+      "normal_contribution_share": 0.20810170471668243,
+      "anomaly_contribution_share": 0.15661342442035675,
+      "total_contribution_share": 0.2041184902191162
+    }
+  ],
+  "elapsed_seconds": 58.54873789999692,
+  "caveat": "Per-variable test-label metrics are post-hoc diagnosis only, not a trained or validated replacement scoring method.",
+  "root_resolves_relative_to_script": true,
+  "csv_float32_roundtrip_saved_energy_verified_exact": true,
+  "script_sha256": "324f3c99475480f471a3c794c47ad920cf79019089929175f3dc87b7435e0587"
+}

@@ -1,0 +1,150 @@
+{
+  "metrics": {
+    "precision": 0.22641509433962265,
+    "recall": 0.04126862820022927,
+    "f1": 0.0698125404007757,
+    "roc_auc": 0.6514906349355243,
+    "ap": 0.3209934862255933,
+    "confusion_matrix": [
+      [
+        10976,
+        369
+      ],
+      [
+        2509,
+        108
+      ]
+    ],
+    "points": 13962,
+    "anomalies": 2617,
+    "prevalence": 0.18743732989543047,
+    "false_positive_rate": 0.03252534156015866,
+    "point_adjusted": {
+      "precision": 0.87642330877428,
+      "recall": 1.0,
+      "f1": 0.9341424237015884,
+      "roc_auc": 0.6514906349355243,
+      "ap": 0.3209934862255933,
+      "confusion_matrix": [
+        [
+          10976,
+          369
+        ],
+        [
+          0,
+          2617
+        ]
+      ],
+      "points": 13962,
+      "anomalies": 2617
+    },
+    "event_hits": 7,
+    "events": 7,
+    "normal_alarm_runs": 342,
+    "anomaly_alarm_runs": 100,
+    "normal_single_point_runs": 323,
+    "anomaly_single_point_runs": 93,
+    "normal_alarm_runs_per_minute": 36.17452622300573,
+    "delay_mean_seconds": 1.0928571428571396,
+    "delay_median_seconds": 0.75
+  },
+  "threshold_diagnostic": {
+    "base_only_offline_diagnostic": {
+      "precision": 0.2084063047285464,
+      "recall": 0.045471914405808174,
+      "f1": 0.07465495608531995,
+      "roc_auc": 0.6514906349355243,
+      "ap": 0.3209934862255933,
+      "confusion_matrix": [
+        [
+          10893,
+          452
+        ],
+        [
+          2498,
+          119
+        ]
+      ],
+      "points": 13962,
+      "anomalies": 2617
+    },
+    "additional_anomaly_points_suppressed_by_trend": 11,
+    "normal_points_suppressed_by_trend": 83,
+    "anomaly_trend_factor_median": 1.000767807248269,
+    "scope": "Same recorded scores; omit only trend multiplier for explanation, not a validated replacement threshold"
+  },
+  "provenance": {
+    "setting": "ALFA10vars_MSTGCNet_sl96_dm64_el3_causal_last_atssd_v12_finegrained_E4_cfg515879a959_0",
+    "configuration_fingerprint_matches": true,
+    "server_commit": "6397638d02bd362dfb30cb43ee2d1fd9a7322db6",
+    "server_branch": "exp/variable-granger-v1",
+    "source_checks": {
+      "run.py": {
+        "exact_bytes": false,
+        "lf_match": false,
+        "crlf_match": true
+      },
+      "models/MSTGCNet.py": {
+        "exact_bytes": false,
+        "lf_match": false,
+        "crlf_match": true
+      },
+      "models/variable_granger.py": {
+        "exact_bytes": false,
+        "lf_match": false,
+        "crlf_match": true
+      },
+      "layers/GrangerPrior.py": {
+        "exact_bytes": false,
+        "lf_match": false,
+        "crlf_match": true
+      },
+      "exp/exp_anomaly_detection.py": {
+        "exact_bytes": false,
+        "lf_match": false,
+        "crlf_match": true
+      },
+      "data_provider/data_loader.py": {
+        "exact_bytes": false,
+        "lf_match": false,
+        "crlf_match": true
+      },
+      "utils/atssd.py": {
+        "exact_bytes": false,
+        "lf_match": false,
+        "crlf_match": true
+      }
+    },
+    "data_checks": {
+      "train.csv": true,
+      "train_meta.csv": true,
+      "val.csv": true,
+      "val_meta.csv": true,
+      "metadata.json": true
+    },
+    "checkpoint_sha256": "7c3769b8a10bec29c633d6876d0496baf7f07afc202b71c2dd1265c8a431b1cb",
+    "prior_sha256": "a89097941714dddf89658754893a313099e2ab54dd0c70c8ace6f249a3f077fd",
+    "test_scope": "Local labels/indices/times match, but server config did not hash test feature files"
+  },
+  "checks": {
+    "all_arrays_finite": true,
+    "labels_indices_times_aligned": true,
+    "atssd_predictions_exact": true,
+    "atssd_thresholds_exact": true,
+    "point_adjustment_exact": true,
+    "per_fault_metrics_match": true,
+    "all_anomalies_scored": true,
+    "warmup_normal_points": 665,
+    "checkpoint_tensors_finite": true,
+    "train_val_test_source_files_disjoint": true,
+    "prior_sources_training_only": true,
+    "train_val_labels_all_normal": true
+  },
+  "missing_evidence": [
+    "train/validation loss curve",
+    "best checkpoint epoch",
+    "GPU timing and memory",
+    "matched E0/E1/E2/E3/E5 full training",
+    "additional random seeds"
+  ]
+}

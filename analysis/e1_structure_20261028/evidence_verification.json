@@ -1,0 +1,11 @@
+{
+  "source_hashes_match_after_line_ending_normalization": true,
+  "structural_assertions_passed": true,
+  "checkpoint_files_unchanged": true,
+  "production_code_diff_empty": true,
+  "normal_runtime_samples": 128,
+  "runtime_and_boundary_never_opened_test_csv": true,
+  "no_optimizer_updates": true,
+  "no_full_retraining": true,
+  "note": "Frozen boundary operator sensitivity is not a retrained performance comparison"
+}

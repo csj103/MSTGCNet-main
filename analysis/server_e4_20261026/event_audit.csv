@@ -1,0 +1,8 @@
+﻿segment_id,start_index,end_index_exclusive,evaluated_points,total_points,hit,first_detection_index,delay_points,delay_seconds,start_source_file,start_fine_anomaly_type,start_original_index,start_original_time_sec,true_positive_points,raw_coverage,duration_seconds,longest_missed_points,last_alarm_after_onset_seconds,alarm_runs
+0,2334,2647,313,313,True,2356,22,1.0999999999999943,carbonZ_2018-07-18-16-22-01_engine_failure_with_emr_traj.csv,Engine full power loss,6464,116.690735973,9,0.02875399361022364,15.65,104,14.05,9
+1,5005,5215,210,210,True,5018,13,0.6499999999999915,carbonZ_2018-09-11-14-41-51_elevator_failure.csv,Elevator stuck at zero,37831,117.86373392,17,0.08095238095238096,10.5,68,10.05,15
+2,6326,6619,293,293,True,6341,15,0.75,carbonZ_2018-09-11-15-06-34_1_rudder_right_failure.csv,Rudder stuck to right,46346,55.516974368,15,0.051194539249146756,14.65,95,14.4,14
+3,7821,8004,183,183,True,7827,6,0.29999999999999716,carbonZ_2018-09-11-15-06-34_3_rudder_left_failure.csv,Rudder stuck to left,49155,60.093891456,5,0.0273224043715847,9.15,156,1.3,4
+4,9321,10037,716,716,True,9356,35,1.75,carbonZ_2018-09-11-17-27-13_2_both_ailerons_failure.csv,Both aileron stuck at zero,53459,65.843257421,17,0.023743016759776536,35.8,185,31.7,15
+5,12276,12698,422,422,True,12332,56,2.799999999999997,carbonZ_2018-09-11-17-55-30_1_right_aileron_failure.csv,Right aileron stuck at zero,56376,111.938035844,17,0.04028436018957346,21.1,87,18.3,17
+6,14147,14627,480,480,True,14153,6,0.29999999999999716,carbonZ_2018-10-05-14-37-22_3_left_aileron_failure.csv,Left aileron stuck at zero,68502,72.449004736,28,0.058333333333333334,24.0,145,16.7,26
